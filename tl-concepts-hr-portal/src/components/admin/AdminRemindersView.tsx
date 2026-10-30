@@ -1,0 +1,232 @@
+import React, { useState } from 'react';
+import { 
+  BellRing, 
+  AlertTriangle, 
+  CheckCircle2, 
+  Calendar, 
+  Clock3,
+  ArrowRight,
+  ShieldAlert
+} from 'lucide-react';
+import { useHR } from '../../context/HRContext';
+import { formatDate, formatDateTime } from '../../utils/formatters';
+import { useI18n } from '../../context/I18nContext';
+
+export const AdminRemindersView: React.FC = () => {
+  const { t, value: translateValue } = useI18n();
+  const {
+    reminders,
+    resolveReminder,
+    markAllRemindersAsRead,
+    setAdminTab,
+    setSelectedEmployeeIdForAdmin,
+    setSelectedProfileChangeRequestId,
+    setIsEditProfileModalOpen,
+    pendingOnboardingCount,
+  } = useHR();
+
+  const [filterCategory, setFilterCategory] = useState<string>('ALL');
+  const [filterSeverity, setFilterSeverity] = useState<string>('ALL');
+  const [showRead, setShowRead] = useState(false);
+
+  const filteredReminders = reminders
+    .filter(rem => {
+      const matchCat = filterCategory === 'ALL' || rem.category === filterCategory;
+      const matchSev = filterSeverity === 'ALL' || rem.severity === filterSeverity;
+      return matchCat && matchSev && (showRead || !rem.isRead);
+    })
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  const unreadCount = reminders.filter(rem => !rem.isRead).length;
+
+  return (
+    <div className="space-y-6">
+      {/* Page Header */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
+            {t('adminReminders.title')}
+          </h1>
+          <p className="text-sm text-slate-600 mt-0.5">
+            {t('adminReminders.subtitle')}
+          </p>
+        </div>
+
+        <div className="flex items-center space-x-2">
+          {pendingOnboardingCount > 0 && (
+            <span className="px-3 py-1.5 bg-primary-100 text-primary-800 rounded-xl font-bold text-xs">
+              {t('adminReminders.pendingOnboardingCount', { count: pendingOnboardingCount })}
+            </span>
+          )}
+          <span className="px-3 py-1.5 bg-amber-100 text-amber-800 rounded-xl font-bold text-xs">
+            {t('adminReminders.activeAlertsCount', { count: unreadCount })}
+          </span>
+          {unreadCount > 0 && (
+            <button
+              onClick={markAllRemindersAsRead}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-bold text-xs cursor-pointer"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>{t('adminReminders.markAllAsRead', { count: unreadCount })}</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Filter Toolbar */}
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center space-x-2">
+            <span className="text-xs font-bold text-slate-500 uppercase">{t('adminReminders.categoryLabel')}</span>
+            <select
+              value={filterCategory}
+              onChange={e => setFilterCategory(e.target.value)}
+              className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none"
+            >
+              <option value="ALL">{t('adminReminders.allCategories')}</option>
+              <option value="onboarding_review">{t('adminReminders.catOnboardingReview')}</option>
+              <option value="contract">{t('adminReminders.catContract')}</option>
+              <option value="contract_missing">{t('adminReminders.catContractMissing')}</option>
+              <option value="salary_review">{t('adminReminders.catSalaryReview')}</option>
+              <option value="missing_doc">{t('adminReminders.catMissingDoc')}</option>
+              <option value="leave_request">{t('adminReminders.catLeaveRequest')}</option>
+              <option value="ot_request">{t('adminReminders.catOtRequest')}</option>
+              <option value="work_event">{t('adminReminders.catWorkEvent')}</option>
+              <option value="payroll">{t('adminReminders.catPayroll')}</option>
+              <option value="kpi">{t('adminReminders.catKpi')}</option>
+              <option value="profile_change_request">{t('adminReminders.catProfileChangeRequest')}</option>
+            </select>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <span className="text-xs font-bold text-slate-500 uppercase">{t('adminReminders.severityLabel')}</span>
+            <select
+              value={filterSeverity}
+              onChange={e => setFilterSeverity(e.target.value)}
+              className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none"
+            >
+              <option value="ALL">{t('adminReminders.allSeverities')}</option>
+              <option value="high">{t('adminReminders.sevHigh')}</option>
+              <option value="medium">{t('adminReminders.sevMedium')}</option>
+              <option value="low">{t('adminReminders.sevLow')}</option>
+            </select>
+          </div>
+        </div>
+
+        <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 cursor-pointer">
+          <input type="checkbox" checked={showRead} onChange={e => setShowRead(e.target.checked)} />
+          {t('adminReminders.showRead')}
+        </label>
+
+        <span className="text-xs font-medium text-slate-500">
+          {t('adminReminders.showingCount', { count: filteredReminders.length })}
+        </span>
+      </div>
+
+      {/* Reminders List */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+        {filteredReminders.length === 0 ? (
+          <div className="p-12 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
+            <CheckCircle2 className="w-10 h-10 text-success-500 mx-auto mb-2" />
+            <p className="font-bold text-slate-800 text-base">{t('adminReminders.emptyTitle')}</p>
+            <p className="text-xs text-slate-500 mt-1">{t('adminReminders.emptySubtitle')}</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {filteredReminders.map(rem => (
+              <div
+                key={rem.id}
+                className={`p-4 rounded-2xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                  rem.severity === 'high'
+                    ? 'bg-rose-50/60 border-rose-200 text-rose-900'
+                    : rem.severity === 'medium'
+                      ? 'bg-amber-50/60 border-amber-200 text-amber-900'
+                      : 'bg-slate-50 border-slate-200 text-slate-800'
+                }`}
+              >
+                <div className="flex items-start space-x-3.5">
+                  <div className="mt-1">
+                    {rem.severity === 'high' ? (
+                      <ShieldAlert className="w-6 h-6 text-rose-600" />
+                    ) : rem.severity === 'medium' ? (
+                      <AlertTriangle className="w-6 h-6 text-amber-600" />
+                    ) : (
+                      <BellRing className="w-6 h-6 text-primary-600" />
+                    )}
+                  </div>
+
+                  <div>
+                    <div className="flex items-center space-x-2">
+                      <span className="font-bold text-sm">{translateValue(rem.title)}</span>
+                      {rem.employeeName && (
+                        <span className="px-2.5 py-0.5 text-xs font-semibold bg-white border border-slate-200 rounded-md text-slate-800">
+                          {rem.employeeName}
+                        </span>
+                      )}
+                      <span className={`px-2 py-0.5 text-[10px] font-bold uppercase rounded ${
+                        rem.severity === 'high' ? 'bg-rose-200 text-rose-800' : 'bg-amber-200 text-amber-800'
+                      }`}>
+                        {rem.severity === 'high' ? t('adminReminders.high') : t('adminReminders.medium')}
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-slate-700 mt-1.5 leading-relaxed">
+                      {translateValue(rem.message)}
+                    </p>
+
+                    <p className="text-[11px] font-medium text-slate-500 mt-1 flex items-center space-x-1">
+                      <Clock3 className="w-3 h-3 text-slate-400" />
+                      <time dateTime={rem.createdAt}>{t('adminReminders.createdAt', { date: formatDateTime(rem.createdAt) })}</time>
+                    </p>
+
+                    {rem.dueDate && (
+                      <p className="text-[11px] font-medium text-slate-500 mt-1 flex items-center space-x-1">
+                        <Calendar className="w-3 h-3 text-slate-400" />
+                        <span>{t('adminReminders.dueDate', { date: formatDate(rem.dueDate) })}</span>
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 shrink-0">
+                  {rem.employeeId && (
+                    <button
+                      onClick={() => {
+                        setSelectedEmployeeIdForAdmin(rem.employeeId!);
+                        if (rem.category === 'profile_change_request' && rem.profileChangeRequestId) {
+                          setSelectedProfileChangeRequestId(rem.profileChangeRequestId);
+                          setIsEditProfileModalOpen(true);
+                        } else if (rem.category === 'contract' || rem.category === 'contract_missing' || rem.category === 'salary_review') {
+                          setAdminTab('admin-contracts');
+                        } else if (rem.category === 'leave_request' || rem.category === 'work_event') {
+                          setAdminTab('admin-leaves');
+                        } else if (rem.category === 'ot_request' || rem.category === 'kpi') {
+                          setAdminTab('admin-kpi');
+                        } else if (rem.category === 'payroll') {
+                          setAdminTab('admin-payroll');
+                        } else {
+                          setAdminTab('admin-employees');
+                        }
+                      }}
+                      className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl text-xs flex items-center space-x-1 shadow-md shadow-primary-500/20 cursor-pointer"
+                    >
+                      <span>{t('adminReminders.actionNow')}</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+
+                  {!rem.isRead && <button
+                    onClick={() => resolveReminder(rem.id)}
+                    className="px-3.5 py-2 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 font-semibold rounded-xl text-xs cursor-pointer"
+                  >
+                    {t('adminReminders.markAsRead')}
+                  </button>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};

@@ -1,0 +1,369 @@
+import React, { useState } from 'react';
+import { useHR } from '../context/HRContext';
+import { useMoneyVisibility } from '../context/MoneyVisibilityContext';
+import { useAuth } from '../context/AuthContext';
+import { useEmployeeSensitiveInfo } from '../hooks/useEmployees';
+import { usePayrollRecord } from '../hooks/usePayroll';
+import { formatDate } from '../utils/formatters';
+import { X, Download, FileText } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
+import { useSignedImageUrl } from '../hooks/useFileUpload';
+import { getUserFacingError } from '../lib/userFacingError';
+import { customTotal, readCustomItems } from '../utils/payroll';
+
+export const PayslipDetailModal: React.FC = () => {
+  const { selectedPayslipId, setSelectedPayslipId, showToast } = useHR();
+  const { formatMoney } = useMoneyVisibility();
+  const { profile, session } = useAuth();
+  const [verifiedPayslipId, setVerifiedPayslipId] = useState<string | null>(null);
+  const [password, setPassword] = useState('');
+  const [reauthError, setReauthError] = useState('');
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const needsReauth = profile?.role === 'employee' && verifiedPayslipId !== selectedPayslipId;
+
+  const { data: payslip } = usePayrollRecord(needsReauth ? undefined : selectedPayslipId ?? undefined);
+  const { data: bankInfo } = useEmployeeSensitiveInfo(payslip?.employee_id);
+  const { data: payslipPdfUrl } = useSignedImageUrl(payslip?.payslip_pdf_path);
+
+  if (!selectedPayslipId) return null;
+
+  const close = () => {
+    setSelectedPayslipId(null);
+    setVerifiedPayslipId(null);
+    setPassword('');
+    setReauthError('');
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!payslipPdfUrl || !payslip) return;
+    setIsDownloadingPdf(true);
+    try {
+      const response = await fetch(payslipPdfUrl);
+      if (!response.ok) throw new Error('Không thể tải file PDF.');
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `phieu-luong-${payslip.month}-${payslip.year}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      showToast('Không thể tải PDF. Vui lòng thử lại.');
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
+  const handleReauth = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const email = session?.user.email;
+    if (!email) return;
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      setReauthError(await getUserFacingError(error, 'Mật khẩu không đúng.'));
+      return;
+    }
+    setVerifiedPayslipId(selectedPayslipId);
+    setPassword('');
+    setReauthError('');
+  };
+
+  if (needsReauth) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <form onSubmit={handleReauth} className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4 border border-slate-200">
+          <div>
+            <h2 className="font-bold text-slate-900">Xác nhận trước khi xem phiếu lương</h2>
+            <p className="text-xs text-slate-500 mt-1">Nhập lại mật khẩu để bảo vệ dữ liệu trên máy tính dùng chung.</p>
+          </div>
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoFocus required className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" placeholder="Mật khẩu" />
+          {reauthError && <p className="text-xs text-rose-700">{reauthError}</p>}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={close} className="px-4 py-2 bg-slate-100 rounded-xl text-xs font-semibold">Hủy</button>
+            <button type="submit" className="px-4 py-2 bg-success-600 text-white rounded-xl text-xs font-bold">Xác nhận</button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  if (!payslip) return null;
+
+  const employee = payslip.employees;
+  const customItems = readCustomItems(payslip.custom_items);
+  const customOf = (section: 'income' | 'deduction' | 'adjustment') => customItems.filter((item) => item.section === section);
+  const expenseRefund = payslip.welfare_refund + payslip.business_trip_refund;
+  const paidWorkDays = payslip.paid_work_days || payslip.actual_work_days + payslip.policy_leave_days;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[92vh] flex flex-col overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+
+        {/* Header toolbar */}
+        <div className="bg-slate-900 text-white p-4 px-6 flex items-center justify-between border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <FileText className="w-5 h-5 text-success-400" />
+            <span className="font-bold text-sm">Chi tiết Phiếu lương • Tháng {payslip.month}/{payslip.year}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {payslipPdfUrl ? (
+              <button
+                onClick={() => void handleDownloadPdf()}
+                disabled={isDownloadingPdf}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-success-600 hover:bg-success-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:cursor-wait disabled:opacity-70"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>{isDownloadingPdf ? 'Đang tải PDF...' : 'Tải phiếu lương PDF'}</span>
+              </button>
+            ) : (
+              <button
+                disabled
+                title="PDF được tạo khi phiếu lương được phát hành"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-400 text-xs font-bold rounded-lg cursor-not-allowed"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>PDF chưa sẵn sàng</span>
+              </button>
+            )}
+            <button
+              onClick={close}
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer ml-1"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Payslip body */}
+        <div className="p-6 md:p-8 overflow-y-auto space-y-6 text-slate-800 printable-payslip">
+
+          {/* Company branding header */}
+          <div className="flex flex-col sm:flex-row justify-between items-start border-b border-slate-200 pb-5 gap-4">
+            <div>
+              <div className="flex items-center gap-2 text-success-700 font-extrabold text-base mb-1">
+                <img src="/apple-touch-icon.png" alt="" aria-hidden="true" className="h-8 w-8 object-contain" />
+                <span>TL CONCEPTS</span>
+              </div>
+            </div>
+            <div className="text-left sm:text-right">
+              <span className="inline-block px-3 py-1 bg-success-50 text-success-800 font-bold text-xs rounded-lg border border-success-200 mb-1">
+                PHIẾU LƯƠNG
+              </span>
+            </div>
+          </div>
+
+          {/* Payslip Title */}
+          <div className="text-center py-2">
+            <h1 className="text-xl font-extrabold uppercase text-slate-900 tracking-tight">PHIẾU LƯƠNG NHÂN VIÊN</h1>
+            <p className="text-xs font-bold text-success-700 mt-1">Kỳ tính lương: Tháng {payslip.month}/{payslip.year}</p>
+          </div>
+
+          {/* Employee Basic Info Grid */}
+          <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs grid grid-cols-2 sm:grid-cols-3 gap-y-3 gap-x-4">
+            <div>
+              <span className="text-slate-500 block text-[11px]">Họ và tên</span>
+              <strong className="text-slate-900 text-sm">{employee?.full_name}</strong>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Mã nhân viên</span>
+              <strong className="font-mono text-success-800">{employee?.employee_code}</strong>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Chức vụ</span>
+              <strong className="text-slate-800">{employee?.job_title}</strong>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Phòng ban</span>
+              <strong className="text-slate-800">{employee?.department}</strong>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Làm việc / Tổng</span>
+              <strong className="font-mono text-slate-800">{payslip.actual_work_days} / {paidWorkDays} ngày</strong>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Ngày nghỉ / Nghỉ chế độ</span>
+              <strong className="font-mono text-slate-800">{payslip.annual_leave_used_days} / {payslip.policy_leave_days} ngày</strong>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Email</span>
+              <strong className="text-slate-800">{employee?.email || '—'}</strong>
+            </div>
+            <div>
+              <span className="text-slate-500 block text-[11px]">Tài khoản nhận lương</span>
+              <strong className="font-mono text-slate-800">{bankInfo?.bank_name || '—'} - {bankInfo?.bank_account_number || '—'}</strong>
+            </div>
+          </div>
+
+          {/* 2-Column Income vs Deductions Table */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+            {/* Column 1: Income / Thống kê Thu nhập */}
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="bg-success-700 text-white text-xs font-bold px-4 py-2.5 flex justify-between items-center">
+                <span>I. THU NHẬP (GROSS)</span>
+                <span>SỐ TIỀN (VNĐ)</span>
+              </div>
+              <div className="p-4 space-y-2.5 text-xs">
+                <div className="flex justify-between pb-1.5 border-b border-slate-100">
+                  <span className="text-slate-600">Lương cơ bản:</span>
+                  <span className="font-semibold tabular-nums">{formatMoney(payslip.workday_salary || payslip.base_salary)}</span>
+                </div>
+                <div className="flex justify-between pb-1.5 border-b border-slate-100">
+                  <span className="text-slate-600">Phụ cấp thiết kế:</span>
+                  <span className="font-semibold tabular-nums text-success-700">+{formatMoney(payslip.kpi_bonus)}</span>
+                </div>
+                <div className="flex justify-between pb-1.5 border-b border-slate-100">
+                  <span className="text-slate-600">
+                    Lương + Phụ cấp thiết kế OT:
+                    {payslip.ot_hours > 0 && <small className="block text-[10px] text-slate-400">OT ngày lễ: {payslip.ot_hours} giờ</small>}
+                  </span>
+                  <span className="font-semibold tabular-nums text-success-700">+{formatMoney(payslip.ot_pay)}</span>
+                </div>
+                {payslip.project_bonus_amount > 0 && (
+                  <div className="flex justify-between pb-1.5 border-b border-slate-100">
+                    <span className="text-slate-600">Thưởng dự án:</span>
+                    <span className="font-semibold tabular-nums text-success-700">+{formatMoney(payslip.project_bonus_amount)}</span>
+                  </div>
+                )}
+
+                <div className="flex justify-between pb-1.5 border-b border-slate-100 pl-2 text-[11px]">
+                  <span className="text-slate-500">• Hỗ trợ điện thoại:</span>
+                  <span className="font-semibold tabular-nums">+{formatMoney(payslip.phone_allowance)}</span>
+                </div>
+                <div className="flex justify-between pb-1.5 border-b border-slate-100 pl-2 text-[11px]">
+                  <span className="text-slate-500">• Hỗ trợ ăn trưa:</span>
+                  <span className="font-semibold tabular-nums">+{formatMoney(payslip.lunch_allowance)}</span>
+                </div>
+
+                {payslip.holiday_bonus_amount > 0 && (
+                  <div className="flex justify-between pb-1.5 border-b border-slate-100">
+                    <span className="text-slate-600">Thưởng lễ:</span>
+                    <span className="font-semibold tabular-nums text-success-700">+{formatMoney(payslip.holiday_bonus_amount)}</span>
+                  </div>
+                )}
+
+                {customOf('income').map((item) => (
+                  <div key={item.id} className="flex justify-between pb-1.5 border-b border-slate-100">
+                    <span className="text-slate-600">{item.label}:</span>
+                    <span className="font-semibold tabular-nums text-success-700">+{formatMoney(item.amount)}</span>
+                  </div>
+                ))}
+
+                <div className="flex justify-between pt-2 text-xs font-bold text-slate-900 border-t-2 border-slate-200">
+                  <span>TỔNG THU NHẬP (GROSS):</span>
+                  <span className="tabular-nums text-success-800">{formatMoney(payslip.gross_income)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Column 2: Deductions / Thống kê Khấu trừ */}
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="bg-rose-700 text-white text-xs font-bold px-4 py-2.5 flex justify-between items-center">
+                <span>II. CÁC KHOẢN KHẤU TRỪ</span>
+                <span>SỐ TIỀN (VNĐ)</span>
+              </div>
+              <div className="p-4 space-y-2.5 text-xs">
+                <div className="flex justify-between pb-1.5 border-b border-slate-100">
+                  <span className="text-slate-600">BHXH / BHYT / BHTN bắt buộc:</span>
+                  <span className="font-semibold tabular-nums text-rose-700">-{formatMoney(
+                    payslip.bhxh_deduction + payslip.bhyt_deduction + payslip.bhtn_deduction
+                  )}</span>
+                </div>
+                <div className="flex justify-between pb-1.5 border-b border-slate-100">
+                  <span className="text-slate-600">Thuế Thu nhập cá nhân (TNCN):</span>
+                  <span className="font-semibold tabular-nums text-rose-700">-{formatMoney(payslip.personal_income_tax)}</span>
+                </div>
+
+                {payslip.advance_payment > 0 && (
+                  <div className="flex justify-between pb-1.5 border-b border-slate-100">
+                    <span className="text-slate-600">Khấu trừ tạm ứng:</span>
+                    <span className="font-semibold tabular-nums text-rose-700">-{formatMoney(payslip.advance_payment)}</span>
+                  </div>
+                )}
+
+                {payslip.other_deductions > 0 && (
+                  <div className="flex justify-between pb-1.5 border-b border-slate-100">
+                    <span className="text-slate-600">Khấu trừ khác:</span>
+                    <span className="font-semibold tabular-nums text-rose-700">-{formatMoney(payslip.other_deductions)}</span>
+                  </div>
+                )}
+
+                {customOf('deduction').map((item) => (
+                  <div key={item.id} className="flex justify-between pb-1.5 border-b border-slate-100">
+                    <span className="text-slate-600">{item.label}:</span>
+                    <span className="font-semibold tabular-nums text-rose-700">-{formatMoney(item.amount)}</span>
+                  </div>
+                ))}
+
+                <div className="flex justify-between pt-2 text-xs font-bold text-slate-900 border-t-2 border-slate-200">
+                  <span>TỔNG KHẤU TRỪ:</span>
+                  <span className="tabular-nums text-rose-700">
+                    -{formatMoney(payslip.bhxh_deduction + payslip.bhyt_deduction + payslip.bhtn_deduction + payslip.personal_income_tax + payslip.advance_payment + payslip.other_deductions + customTotal(customItems, 'deduction'))}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          {(expenseRefund > 0 || payslip.personal_income_tax_refund > 0 || payslip.prior_month_adjustment !== 0 || customOf('adjustment').length > 0) && (
+            <div className="overflow-hidden rounded-xl border border-primary-200">
+              <div className="flex items-center justify-between bg-primary-50 px-4 py-2.5 text-xs font-bold text-primary-800">
+                <span>III. ĐIỀU CHỈNH & HOÀN TRẢ</span>
+                <span>SỐ TIỀN (VNĐ)</span>
+              </div>
+              <div className="grid grid-cols-1 gap-2 p-4 text-xs sm:grid-cols-2">
+                <div className="flex justify-between border-b border-slate-100 pb-2"><span>Hoàn chi phí</span><b className="tabular-nums">+{formatMoney(expenseRefund)}</b></div>
+                <div className="flex justify-between border-b border-slate-100 pb-2"><span>Hoàn thuế TNCN</span><b className="tabular-nums">+{formatMoney(payslip.personal_income_tax_refund)}</b></div>
+                <div className="flex justify-between border-b border-slate-100 pb-2"><span>Truy lĩnh / điều chỉnh kỳ trước</span><b className="tabular-nums">{payslip.prior_month_adjustment > 0 ? '+' : ''}{formatMoney(payslip.prior_month_adjustment)}</b></div>
+                {customOf('adjustment').map((item) => (
+                  <div key={item.id} className="flex justify-between border-b border-slate-100 pb-2"><span>{item.label}</span><b className="tabular-nums">+{formatMoney(item.amount)}</b></div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Net pay is intentionally plain: the final figure needs hierarchy, not a competing card treatment. */}
+          <div className="flex flex-col items-start justify-between gap-4 border-y-2 border-slate-900 py-5 sm:flex-row sm:items-end">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">THỰC LÃNH (NET PAY)</p>
+              <h2 className="mt-1 text-3xl font-black tracking-tight tabular-nums text-slate-950 sm:text-2xl">
+                {formatMoney(payslip.net_salary)}
+              </h2>
+            </div>
+
+            {payslip.payment_date && (
+              <div className="text-left sm:text-right">
+                <p className="text-[11px] text-slate-500">Ngày chuyển: {formatDate(payslip.payment_date)}</p>
+              </div>
+            )}
+          </div>
+
+          {payslip.note?.trim() ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-slate-700">
+              <p className="font-bold uppercase tracking-wide text-amber-800">Ghi chú</p>
+              <p className="mt-1 whitespace-pre-wrap break-words">{payslip.note.trim()}</p>
+            </div>
+          ) : null}
+
+          {/* Footer signatures */}
+          <div className="pt-6 border-t border-slate-200 grid grid-cols-2 text-center text-xs text-slate-600">
+            <div>
+              <p className="font-bold text-slate-800">Người lập phiếu</p>
+              <p className="text-[11px] text-slate-400 mt-1">(Ký & ghi rõ họ tên)</p>
+              <p className="font-semibold text-slate-700 mt-12">Phòng Nhân sự HR</p>
+            </div>
+            <div>
+              <p className="font-bold text-slate-800">Xác nhận của Nhân viên</p>
+              <p className="text-[11px] text-slate-400 mt-1">(Ký & ghi rõ họ tên)</p>
+              <p className="font-semibold text-slate-700 mt-12">{employee?.full_name}</p>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+    </div>
+  );
+};

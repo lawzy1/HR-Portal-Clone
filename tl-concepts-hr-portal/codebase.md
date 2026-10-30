@@ -1,0 +1,346 @@
+# codebase.md — Trạng thái hiện tại của TL Concepts HR Portal
+
+Cập nhật lần cuối: **2026-09-19**. File này tóm tắt trạng thái repo + lịch sử thay đổi để nạp context nhanh cho session tiếp theo. Xem [AGENTS.md](AGENTS.md) để biết quy ước code / bài học / logic nghiệp vụ chi tiết và [docs/audit-2026-09-05.md](docs/audit-2026-09-05.md) cho audit đầy đủ.
+
+> Quy ước: mỗi lần có thay đổi đáng kể, thêm 1 mục mới lên **đầu** phần "Lịch sử thay đổi" (mới nhất trên cùng), và cập nhật "Trạng thái hiện tại" nếu module liên quan đổi.
+
+## Trạng thái hiện tại (snapshot)
+
+**Đã hoàn thiện & apply vào DB thật, verify qua UI/RLS:**
+- Auth 3 role (`admin`/`hr`/`employee`), multi-tenant RLS qua `company_id`. HR/Kế toán vận hành dữ liệu nhưng không quản lý account/role hoặc final approve; Admin là role duy nhất làm các thao tác này.
+- Auth self-service: User/HR/Admin đều có thể xem hồ sơ tài khoản và đổi mật khẩu của chính mình; màn Login có luồng Quên mật khẩu gửi email reset qua Supabase Auth.
+- Hồ sơ nhân viên đầy đủ (thông tin chung, CCCD/MST/BHXH, ngân hàng, người thân, upload ảnh) + **chỉ tiêu KPI theo level/ngày riêng từng người** (mới).
+- Nhân viên đề xuất thay đổi trực tiếp trên form hồ sơ dùng chung; dữ liệu thật chỉ đổi khi Admin mở cảnh báo và bấm `Duyệt & áp dụng`. Đề xuất có thể gồm thông tin cá nhân, giấy tờ/ảnh, ngân hàng và người thân; HR chỉ xem.
+- Portal nhân viên mặc định che toàn bộ số tiền; toggle trên header đổi ẩn/hiện đồng bộ ở mọi màn.
+- Hợp đồng lao động + lịch sử tăng lương + **phụ lục hợp đồng** (mới) + cảnh báo pháp lý Điều 20 BLLĐ 2019.
+- Nghỉ phép: quỹ phép theo năm, đơn xin nghỉ, duyệt, ngày lễ công ty (`company_holidays`), WFH/đi trễ; Admin có thể ghi nhận trực tiếp đã duyệt và sửa hạn dùng quỹ phép, có calendar nguồn lực theo tháng/toàn công ty; range ngày lễ được tách thành từng ngày để dùng trong công thức ngày công.
+- KPI/OT: nhập liệu bài/dự án theo Order+sub-task, **phân loại New Render / Re Process** (mới), **chỉ tiêu KPI tháng tính riêng theo từng nhân viên = chỉ tiêu/ngày × ngày công cá nhân (đã trừ lễ/Tết và phép đã duyệt)** (mới), đồng bộ sang `kpi_monthly`, quản lý OT; Admin tạo trực tiếp OT cho nhân viên được.
+- Payroll: bảng lương tháng là màn hình vận hành mặc định (chỉ tiêu ngày công, dòng lương và tổng Gross/BHXH-PIT/Net), import/paste Excel để nạp nhanh các dòng vào kỳ đó, form sửa từng phiếu, publish/xem phiếu lương, audit log, reminders (HĐ sắp hết hạn, hồ sơ thiếu giấy tờ...), báo cáo & audit trail.
+- User chỉ tự tạo request nghỉ phép, OT, WFH thêm/đi trễ của chính mình; tất cả bắt đầu `Chờ duyệt`. Admin được duyệt/từ chối hoặc tạo trực tiếp bản ghi đã duyệt; HR/Kế toán chỉ xem các request này.
+- Bảng tin nội bộ dùng chung cho mọi role: Admin đăng text nhanh hoặc đính kèm PDF; nhân viên tìm theo nội dung/loại/năm và xem PDF ngay trong portal. File nằm trong private bucket giới hạn 6 MB, RLS theo công ty.
+
+**Đã deploy Supabase, chờ deploy frontend lên Vercel:**
+- Luồng **Admin mời → nhân viên đặt mật khẩu → onboarding → Admin duyệt** đã apply migration, deploy Edge Function `create-employee` và regenerate type từ DB thật. Đăng ký công khai đã bị tắt ở UI và Supabase Auth.
+- Khi nhân viên gửi onboarding, hồ sơ chuyển `Chờ duyệt hồ sơ` và xuất hiện trực tiếp tại `Thông báo & Cảnh báo` của Admin. Admin mở mục này để vào đúng Hồ sơ Nhân viên, kiểm tra CCCD/ngân hàng/người thân, rồi `Duyệt hồ sơ` hoặc `Yêu cầu bổ sung`. Không gửi email nội bộ cho Admin hoặc email thông báo kết quả cho nhân viên.
+- `vercel.json` rewrite mọi route SPA về `index.html`; sau lần deploy Vercel kế tiếp, mở trực tiếp `/login` và `/auth/activate` sẽ không còn 404. `APP_URL` dùng production URL, CORS cho phép cả production và `http://127.0.0.1:3000`.
+
+**Sẵn sàng deploy Supabase:**
+- Quản lý vòng đời lời mời kích hoạt: admin thấy link đã gửi/đã mở/hết hạn/thu hồi, có thể gửi lại hoặc thu hồi ngay từ Hồ sơ Nhân viên. Migration và Edge Function mới cần deploy cùng nhau trước khi UI này hoạt động.
+
+**Cắt góc có chủ đích (xem lý do trong AGENTS.md §Lessons):**
+- `kpi_level` là text tự do + gợi ý, không phải bảng danh mục level.
+- Phụ cấp hợp đồng (`allowance_amount`) là 1 số tổng, chưa tách loại phụ cấp.
+- `company_settings.kpi_rate_per_day` không còn được dùng ở đâu (cột mồ côi).
+
+**Gap đã biết, chưa fix (xem thảo luận 2026-08-25):**
+- OT đã bỏ toàn bộ tiền dự kiến khỏi UI/query, nhưng Supabase remote vẫn còn ba cột legacy `ot_records.pay_type`, `ot_percentage`, `amount`; policy INSERT của employee còn tham chiếu các cột này.
+- PDF phiếu lương remote chưa nhúng logo hình ảnh; modal vẫn dùng `/favicon.ico`. Git local dùng font Inter nhưng Edge Function production version 6 vẫn dùng Noto Sans.
+- Tab “Thông tin công việc” trong chỉnh sửa hồ sơ vẫn là snapshot cố định, chưa mở trình quản lý hợp đồng/custom fields.
+- KPI chưa natural-sort theo số đầu tên dự án, chưa collapse/expand từng project, category badge chưa chống vỡ chữ trên màn hình hẹp và cột deadline vẫn hiện nhãn “Đúng hạn”.
+- Đổi role vẫn update trực tiếp từ dropdown, chưa có confirmation và chưa re-auth bằng mật khẩu hiện tại.
+- Git `origin` đang chứa credential trong URL. Rotate credential và đổi remote về URL không chứa token.
+- Bảng quỹ phép đang hiển thị `total_accumulated` (phép đã tích lũy đến thời điểm hiện tại), không phải toàn bộ `annual_entitlement`; tên “Tổng quỹ” dễ gây hiểu nhầm. Đã chốt `remaining_days` phải là số khả dụng `max(total_accumulated - used_days - pending_days, 0)` và backend phải chặn đơn phép năm vượt số này; chưa apply migration.
+- Export Excel bảng KPI (`AdminKpiOtView.handleDownloadExcel`) chưa có cột "Phân loại" (New Render/Re Process).
+- Chưa có bảng xếp hạng/đánh giá hiệu suất riêng cho ban lãnh đạo (hiện chỉ có card tiến độ %/nhân viên, chưa xếp loại Xuất sắc/Đạt/Chưa đạt hay ranking toàn công ty).
+- `ImportKpiModal` (import Excel vào `kpi_monthly`) vẫn cho admin gõ tay `kpi_target`, chưa tự tính theo công thức chỉ tiêu×ngày công mới.
+- Màn tự xem KPI của nhân viên (`KpiRewardsView`) đã sửa code nhưng chưa test qua UI thật bằng tài khoản employee (chỉ verify logic).
+
+## Schema hiện tại (bảng chính, `public` schema)
+
+`companies`, `company_settings`, `company_holidays`, `profiles`, `employees`, `employee_sensitive_info`, `employee_relatives`, `contracts`, `salary_history`, `leave_balances`, `leave_balance_adjustments`, `leave_requests`, `work_events`, `kpi_job_items`, `kpi_monthly`, `kpi_adjustments`, `ot_records`, `payroll_records`, `announcements`, `audit_logs`.
+
+Nguồn sự thật cho type: `src/lib/database.types.ts` (generate từ Supabase, đừng sửa tay trừ khi vừa migrate xong và chưa kịp regenerate).
+
+## Lịch sử thay đổi
+
+### 2026-09-19 — Bảng tin nội bộ và thư viện chính sách PDF
+
+- Thêm màn `Thông báo & Chính sách` dùng chung cho Admin/HR/User: timeline theo ngày đăng, tìm kiếm toàn văn phía client, lọc loại/năm và nội dung text giống bài đăng chat.
+- Admin đăng thông báo bắt buộc có tiêu đề + nội dung ngắn, PDF là tùy chọn; có xác nhận trước khi xóa. PDF mở trong overlay bằng trình xem native của trình duyệt và chỉ tạo signed URL khi người dùng mở preview.
+- Migration production `20260919095938_company_announcements.sql` thêm bảng `announcements`, audit trigger, RLS tenant-safe và private bucket `company-announcements` chỉ nhận PDF tối đa 6 MB. Object dùng path bất biến có UUID + cache một năm; DB chỉ lưu path, không lưu signed URL.
+- Đã revoke quyền gọi RPC trực tiếp `audit_row_change()` sau cảnh báo Security Advisor; trigger audit vẫn hoạt động. RLS check trong transaction xác nhận Admin tạo/xem được và Employee bị chặn INSERT; không để lại dữ liệu test.
+- Verify: migration local/remote cùng version; generated types từ remote trùng file local; `npm run lint`, `npm run typecheck`, `npm run build` sạch error (còn warning cũ và cảnh báo chunk lớn). Chưa click-test UI vì quyền điều khiển tab localhost bị từ chối.
+
+### 2026-09-08 — Cho phép tùy chỉnh ngày công và ghi chú phiếu lương
+
+- Phiếu lương nháp cho phép ngày công thực tế lớn hơn ngày công chuẩn để Kế toán xử lý các kỳ đặc biệt; công thức lương theo ngày công giữ nguyên.
+- Ghi chú dùng cột `payroll_records.note` có sẵn, chỉ hiện ở cuối phiếu lương trên Portal và PDF khi có nội dung.
+- Tiền VND từ Excel giữ nguyên giá trị gốc trong payroll nhưng được làm tròn hiển thị đến đồng nguyên trên bảng, form, preview và PDF; tránh biến phần thập phân thành hàng nghìn khi mở form sửa.
+- Admin được xóa phiếu lương ở mọi trạng thái để nhập và phát hành lại; HR/Kế toán vẫn chỉ xóa Nháp/Bị trả lại. Job gửi email cũ được dọn cùng bản ghi, còn email/PDF đã gửi không thể thu hồi.
+
+### 2026-09-06 — Duyệt yêu cầu thay đổi ngay tại hồ sơ nhân viên
+
+- Hồ sơ nhân viên hiển thị số yêu cầu thay đổi đang chờ duyệt cạnh nút chỉnh sửa và mở thẳng đề xuất mới nhất để Admin xem, duyệt.
+- Trung tâm cảnh báo mặc định sắp xếp thông báo mới nhất trước và hiển thị thời điểm tạo trên từng thông báo.
+
+### 2026-09-06 — Mặc định ẩn số tiền trên Portal nhân viên
+
+- Tài khoản `employee` luôn bắt đầu phiên với các khoản lương, thưởng, khấu trừ và thực lĩnh được che; toggle ẩn/hiện đặt trên header và ngay cạnh lương Dashboard, lương trong chi tiết hợp đồng, tổng thực lĩnh trên Phiếu lương.
+- Admin/HR giữ nguyên cơ chế ghi nhớ lựa chọn hiển thị hiện có; toàn bộ màn employee tiếp tục dùng formatter tiền chung nên đổi trạng thái đồng bộ tức thời.
+
+### 2026-09-06 — Đề xuất và duyệt thay đổi hồ sơ có cấu trúc
+
+- `EditProfileModal` dùng chung cho Admin/HR/User: User sửa các trường self-service dưới dạng đề xuất, hồ sơ hiện tại không đổi; Admin mở đúng request từ `Thông báo & Cảnh báo`, xem các giá trị đã điền sẵn và duyệt một lần; HR chỉ xem.
+- `employee_profile_change_requests.proposed_changes jsonb` lưu đúng các trường đổi. RPC `approve_employee_profile_change_request` áp dụng hồ sơ, dữ liệu nhạy cảm và người thân trong một transaction, chỉ Admin gọi được.
+- Ảnh đề xuất được upload thành object mới đúng thư mục công ty/nhân viên; Edge Function giới hạn field, payload và đường dẫn trước khi dùng service role.
+- Migration `20260906114047_structured_profile_change_approval.sql` và Edge Function `request-profile-change` đã deploy. Bốn migration local duplicate từ audit 2026-09-05 đã bỏ; `migration list` đồng bộ, `db push --dry-run` up-to-date và `db lint --linked --level warning` không có lỗi.
+- Verify local: check proposal bằng `node:assert`, `npm run lint`, `npm run typecheck`, `npm run build` đều không có error (còn warning cũ của repo và cảnh báo chunk lớn).
+
+### 2026-09-05 — Audit yêu cầu bổ sung với code, GitHub và Supabase remote
+
+- `main` local sạch và trùng GitHub tại commit `1908e9d`; Supabase DB lint không phát hiện lỗi schema.
+- Xác nhận đã hoàn thành: SearchableSelect chọn nhân viên khi tạo hợp đồng; custom fields từng hợp đồng; Admin sửa/xóa OT với RLS; bỏ tiền OT dự kiến khỏi UI; bỏ mã phiếu; xóa phiếu nháp/bị trả lại qua RPC.
+- Xác nhận chưa hoàn thành hoặc mới một phần: custom fields trong chỉnh sửa hồ sơ; drop ba cột OT legacy; logo hình ảnh trong PDF; đồng bộ font PDF local/remote; toàn bộ yêu cầu KPI mới; confirmation + mật khẩu khi đổi role; cảnh báo request trên UI/email HR/realtime sound.
+- Phát hiện migration drift gồm bốn file local trùng version đã deploy và credential bị nhúng trong URL `origin`; cần xử lý trước lần deploy tiếp theo.
+- Báo cáo và bằng chứng chi tiết: [docs/audit-2026-09-05.md](docs/audit-2026-09-05.md).
+
+### 2026-09-02 — Đồng nhất cảnh báo hợp đồng sắp hết hạn trên Dashboard
+
+- Dashboard và bảng Quản lý hợp đồng đều đọc danh sách hợp đồng thật qua `useAllContracts` (Supabase), không dùng mock data.
+- `HRContext` cũng dùng query `employees` thật, bỏ fallback `initialData`/localStorage để không còn nhân sự mẫu đi ngầm trong Portal.
+- Trạng thái hiển thị và bộ lọc được suy ra từ `end_date` với ngưỡng 60 ngày: còn 90 ngày không cảnh báo, còn 25 ngày cảnh báo, đã hết hạn và vô thời hạn không cảnh báo.
+- Số tổng hợp của bảng chỉ tính hợp đồng mới nhất theo từng nhân viên, tránh cộng lịch sử hợp đồng và không còn lệch với Dashboard khi `contracts.status` lưu cũ.
+- Verify: `npm run lint`, `npm run typecheck` không có lỗi; `npm run build` thành công (chỉ còn cảnh báo chunk lớn của Vite và warning lint cũ).
+
+### 2026-09-02 — Bổ sung i18n Tiếng Việt / English
+
+- Thêm locale VI/EN dùng chung, lưu lựa chọn trên trình duyệt và cập nhật thuộc tính ngôn ngữ của trang; không thêm dependency mới.
+- Nút chuyển ngôn ngữ có ở màn đăng nhập, onboarding và header sau đăng nhập. Menu toàn hệ thống cùng các label chính của onboarding, Tổng quan nhân viên, Hợp đồng, Phiếu lương, Ngày phép và Payroll đã dùng dictionary chung.
+- Trạng thái/loại hợp đồng trong database vẫn giữ nguyên giá trị nghiệp vụ tiếng Việt; giao diện chỉ dịch lúc hiển thị để không ảnh hưởng RPC, filter hoặc quy trình phê duyệt.
+- Language switcher dùng dropdown pill có icon globe, menu lựa chọn native-name (Tiếng Việt/English), đóng khi chọn, click ngoài hoặc nhấn Escape; trên `/login` nằm trong hàng logo của card.
+- Verify: `npm run lint`, `npm run typecheck` sạch error; production build thành công; kiểm tra local xác nhận đổi VI/EN tức thời, reload vẫn giữ locale, `html lang` đúng, menu đóng đúng và console không có lỗi.
+
+### 2026-09-02 — Mở luồng import payroll và tái tạo PDF khi gửi
+
+- Preview payroll cho phép lưu các dòng hợp lệ thành nháp ngay cả khi file còn dòng lỗi; UI báo rõ số dòng bị bỏ qua. Kỳ đang chờ duyệt/đã phát hành vẫn khóa để không sửa dữ liệu đã chốt.
+- File input có thể chọn lại cùng một file sau khi sửa. Worker luôn tạo lại PDF khi xử lý/retry, ghi đè file cũ và tắt object streams để tăng tương thích với trình đọc PDF trong email.
+- Verify: `npm run lint`, `npm run typecheck` sạch error (8 warning cũ), production build thành công; `process-payslip-outbox` version 6 đã ACTIVE trên production.
+
+### 2026-09-02 — Gọn hóa màn hợp đồng cho nhân viên
+
+- Lịch sử hợp đồng trên màn User chuyển từ bảng ngang sang thẻ responsive: hợp đồng hiện tại tự mở, hợp đồng cũ có thể mở khi cần; không còn phải kéo ngang trên mobile.
+- Mỗi thẻ hiển thị đủ thời hạn, vị trí/cấp bậc, KPI/ngày, nơi và lịch làm việc, lương/phụ cấp/commission, liên kết file, ghi chú và quan hệ phụ lục với hợp đồng gốc.
+- Hợp đồng `Sắp hết hạn` được xem là hợp đồng hiện tại, đồng nhất với Admin và payroll.
+
+### 2026-09-02 — Đồng bộ hợp đồng, hồ sơ nhân viên và payroll
+
+- Hợp đồng mới lấy sẵn loại HĐ, ngày bắt đầu, vị trí, lương, level, KPI/ngày, commission và mức đảm bảo thu nhập từ hồ sơ. Khi sửa hợp đồng hiện hành đã phát hành, các trường dùng chung ưu tiên giá trị hiện tại trong hồ sơ; nháp/bị trả lại giữ nguyên dữ liệu đang chỉnh.
+- Payroll mới ưu tiên `employees.current_salary`, fallback sang hợp đồng đã phát hành; hợp đồng `Sắp hết hạn` vẫn được xem là hiện hành. Phiếu lương đã lưu không bị ghi đè vì là snapshot theo kỳ.
+- Migration production `20260902123000_sync_approved_contract_to_employee.sql` đảm bảo khi Admin duyệt hợp đồng `Đang hiệu lực` hoặc `Sắp hết hạn`, hồ sơ được đồng bộ vị trí/loại HĐ/lương/level/KPI/commission/mức đảm bảo; lịch sử lương và quỹ phép được cập nhật trong cùng giao dịch.
+- Verify: `npm run lint`, `npm run typecheck` sạch error (8 warning cũ); production build và Supabase migration dry-run/push thành công.
+
+### 2026-09-02 — Căn layout payroll, dropdown và sửa retry email
+
+- Card tổng hợp payroll tách label/value thành hai dòng và căn giữa số tiền; toàn bộ native dropdown dùng một chevron thống nhất, cách lề phải 12px và chừa khoảng cho nội dung.
+- Migration production `20260902050000_fix_payslip_notification_retry.sql` bỏ cập nhật trạng thái thừa trên phiếu lương đã khóa khi gửi lại email. RPC chỉ requeue outbox; worker tiếp tục ghi kết quả PDF/email, nên lỗi nhà cung cấp không rollback việc phê duyệt/phát hành.
+- Verify: `npm run lint`, `npm run typecheck` sạch error (8 warning cũ); production build và Supabase migration dry-run/push thành công.
+
+### 2026-09-02 — Ổn định bảng quỹ phép và thao tác hợp đồng
+
+- Bảng quỹ phép toàn công ty sắp xếp cố định theo mã nhân viên, rồi tên và ID để thứ tự không đổi sau mỗi lần refetch.
+- Modal sửa hợp đồng có nút ẩn/hiện toàn bộ trường tiền và nút xóa ở hàng đầu; xóa qua Supabase API, kiểm tra đúng bản ghi được xóa, làm mới cache và yêu cầu xác nhận nguy hiểm trước khi thực hiện.
+- Verify: `npm run lint`, `npm run typecheck` sạch error (8 warning cũ); production build thành công.
+
+### 2026-09-02 — Chặn onboarding ghi đè dữ liệu khi tải lỗi
+
+- Form onboarding chỉ hydrate một lần sau khi hồ sơ nhân viên, thông tin nhạy cảm và người thân đều tải thành công. Nếu một query lỗi, form bị chặn và chỉ cho thử tải lại hoặc đăng xuất, tránh gửi state rỗng làm mất dữ liệu tùy chọn đã lưu.
+- Verify: `npm run lint` và `npm run typecheck` sạch error (8 warning cũ); production build thành công.
+
+### 2026-09-01 — Rút gọn onboarding, quỹ phép theo HĐLĐ và KPI/ngày
+
+- Onboarding chỉ bắt buộc số điện thoại, ngày sinh và giới tính; họ tên được sửa, email giữ read-only. CCCD/ngân hàng/người thân là ba section tùy chọn, mặc định đóng và có thể bổ sung sau khi tài khoản được duyệt.
+- Migration production `20260901183000_onboarding_leave_contract_updates.sql` bỏ yêu cầu CCCD/người thân ở RPC, giữ validation bắt buộc ở backend và cho phép người đang onboarding sửa riêng họ tên.
+- Nhân viên tồn tại được giữ nguyên quỹ phép thành số dư nhập tay qua adjustment ledger. Nhân viên tạo mới sau migration bắt đầu 0 ngày và tích lũy 1 ngày tại ngày hiệu lực HĐLĐ chính thức, sau đó mỗi tháng thêm 1 ngày; hợp đồng thử việc/phụ lục không khởi tạo tích lũy.
+- Modal điều chỉnh phép chỉ nhận số dương theo bước 0,5 và tự hiển thị dấu cộng/trừ theo thao tác. Hợp đồng hiện hành có nút sửa cho Admin, chuyển về nháp để duyệt lại; KPI hợp đồng hiển thị/tính theo ngày và đồng bộ về `employees.kpi_target_per_day` khi duyệt.
+- Migration production `20260901190000_restore_contract_kpi_client_compatibility.sql` giữ khóa DB legacy `contracts.kpi_target_month` để frontend đang deploy không lỗi trước lần phát hành kế tiếp; giá trị này được hiểu thống nhất là KPI/ngày.
+- Verify: hai migration đã đồng bộ local/production; types được regenerate từ DB thật; `npm run lint` sạch error (8 warning cũ), `npm run typecheck`, `npm run build` và `supabase db lint --linked` thành công.
+
+### 2026-08-27 — Admin ghi nhận trực tiếp thời gian làm việc và calendar nguồn lực
+
+- Migration production `20260827120000_admin_direct_time_entries.sql` đã apply và migration history local/remote đã đồng bộ. Migration thêm 3 RLS policy INSERT, giới hạn Admin đang hoạt động trong đúng công ty, cho `leave_requests`, `ot_records` và `work_events`; quyền self-service của User không đổi, HR vẫn không được tạo các request này.
+- `AdminKpiOtView` có nút **Tạo OT cho nhân viên** trong khối quản lý OT. Form chọn nhân viên, ngày, số giờ/views, mức chi trả, trạng thái và lý do; preview tiền OT dùng lương hiện tại, ngày công chuẩn và tỷ lệ OT.
+- `AdminLeaveManagementView` thêm luồng **Ghi nhận trực tiếp** để Admin tạo nghỉ phép, WFH hoặc đi trễ ở trạng thái `Đã duyệt`; thêm bảng xử lý WFH/đi trễ đang chờ và calendar nguồn lực tháng theo toàn công ty hoặc từng nhân viên. Click ngày mở chi tiết hoạt động.
+- Bảng quỹ phép cho phép Admin sửa `leave_balances.expiry_date` (hạn dùng quỹ phép) theo từng nhân viên. Đây là cột đã có sẵn nên không cần migration schema.
+- Verify: `npm run build` thành công. Cần UAT bằng tài khoản Admin và kiểm tra HR/employee vẫn bị RLS chặn ở các luồng ghi trực tiếp.
+
+### 2026-08-26 — Sửa quyền outbox khi Admin phê duyệt payroll
+
+- Migration production `20260826133000_payroll_outbox_admin_update_policy.sql` bổ sung quyền và RLS `UPDATE` cho **Admin trong đúng công ty** trên `notification_outbox`.
+- Lý do: `approve_payroll_month` và gửi lại phiếu đều dùng `INSERT ... ON CONFLICT DO UPDATE`; Phase 9 chỉ cấp `SELECT, INSERT`, khiến bản ghi outbox có sẵn trả về 403 khi Admin final approve.
+- Không mở quyền cho `hr` hoặc `employee`; RPC vẫn tự kiểm tra `is_admin()` trước khi phát hành payroll. Migration history local/production đã đồng bộ; security advisor không phát sinh warning mới từ thay đổi này.
+
+### 2026-08-26 — Điều chỉnh ngày công chuẩn theo kỳ KPI
+
+- Migration production `20260826130000_company_workday_overrides.sql` thêm `company_workday_overrides`, unique theo công ty/tháng/năm. RLS: User chỉ đọc quy chuẩn của công ty mình; HR/Kế toán/Admin mới được tạo/sửa/xóa.
+- `AdminKpiOtView` có icon bút cạnh card ngày công. Giá trị mặc định vẫn lấy lịch 5,5 ngày/tuần trừ lễ/Tết, nhưng HR/Kế toán/Admin có thể lưu một số công khác cho đúng kỳ; phép đã duyệt vẫn trừ riêng theo từng nhân viên.
+- Override ảnh hưởng chỉ tiêu KPI tháng, thưởng KPI sau khi tạo lại bản nháp, và mẫu số đơn giá OT. Trigger chặn đổi khi KPI đang `pending_approval`/`published`; User thấy quy chuẩn đã điều chỉnh nhưng không có quyền sửa.
+- Verify production: migration được apply; bảng mới bật RLS với 4 policy. Security advisor không phát sinh warning từ migration (các warning còn lại là function cũ/thiết lập Auth của dự án).
+
+### 2026-08-26 — Payroll chuyển sang bảng lương tháng làm luồng chính
+
+- `AdminPayrollView` hiển thị bảng lương tháng trước phần import, gồm MSNV, nhân viên/vị trí, ngày công chuẩn/thực tế, lương cơ bản, phụ cấp, KPI, OT/thưởng dự án, thưởng lễ, Gross, bảo hiểm, giảm trừ gia cảnh, PIT và Net theo mẫu TL Concepts.
+- Có tổng Gross, tổng bảo hiểm, tổng PIT và tổng Net; có tìm kiếm nhân viên; mỗi dòng Nháp/Trả lại có nút sửa, mọi dòng có nút xem/in phiếu. Admin vẫn có thể tạo lại PDF/gửi lại email cho phiếu đã phát hành.
+- Card ngày công lấy `getMonthWorkDays()` cùng `company_holidays`; khi file Excel thiếu cột ngày công chuẩn, import tự gán ngày công chuẩn của tháng theo lịch công ty, còn ngày công thực tế giữ từ file. Trong form từng phiếu, ngày công chuẩn là giá trị mặc định nhưng HR/Kế toán có thể chỉnh và công thức lương ngày công sẽ dùng số đã chỉnh.
+- Import Excel/paste là bước nạp nhanh (upsert theo nhân viên + tháng/năm), không còn là bảng nghiệp vụ riêng; kỳ lương tiếp tục lấy bắt buộc từ tiêu đề workbook.
+- Thay đổi này chỉ dùng schema/query hiện hữu, **không cần migration Supabase**.
+
+### 2026-08-26 — Phase 1 đồng bộ dữ liệu qua cache/refetch, không polling
+
+- `QueryClient` dùng `staleTime: 0`, `refetchOnMount: 'always'`, `refetchOnWindowFocus: 'always'` và `refetchOnReconnect: 'always'` để mỗi lần mở lại module hoặc quay lại Portal đều đọc dữ liệu mới nhất từ Supabase.
+- Thêm `src/lib/queryRefresh.ts`: mutation sau khi ghi thành công invalidate theo prefix và refetch cả query đang inactive, giúp các module khác không giữ cache cũ.
+- Bổ sung invalidation cho các quan hệ phụ thuộc: hồ sơ nhân viên làm mới các danh sách có join nhân viên; hồ sơ nhạy cảm làm mới cả dashboard tổng hợp; ngày lễ làm mới số dư phép; onboarding/invitation làm mới danh sách nhân viên, profile và lời mời.
+- Bỏ `useHrDataRefresh` và polling 60 giây. Không bật Supabase Realtime ở phase này; khi cần sẽ đánh giá lại theo nhu cầu đồng bộ giữa nhiều thiết bị.
+- Đây là đồng bộ theo API/cache, không phải server push: tab hoặc thiết bị khác chỉ thấy dữ liệu mới khi focus/mount/refetch.
+
+### 2026-08-26 — Thêm form nhập phiếu lương thủ công
+
+- `AdminPayrollView` có nút **Thêm phiếu lương** mở form theo mẫu phiếu lương TL Concepts; form dùng upsert theo nhân viên + tháng/năm và luôn lưu bản ghi ở trạng thái Nháp.
+- Form tự liên kết lương/phụ cấp từ hợp đồng hiện hành, ngày công chuẩn từ lịch lễ, phép đã duyệt từ `leave_requests`, quỹ phép từ `leave_balances`, KPI/OT từ dữ liệu cùng kỳ và tỷ lệ bảo hiểm từ `company_settings`.
+- Tổng thu nhập, tổng khấu trừ, điều chỉnh/hoàn trả và thực lãnh được preview theo F01; `taxable_income`/`family_deduction` hiển thị tham chiếu, còn thuế TNCN vẫn nhập theo Kế toán (MVP). Trigger Phase 10 tiếp tục là nguồn sự thật khi lưu.
+- Phiếu đã chờ duyệt hoặc phát hành bị khóa chỉnh sửa; cột trạng thái thanh toán, ngày thanh toán và ghi chú vẫn nhập được trong form nháp.
+
+### 2026-08-26 — Gọn hóa bảng tài khoản và phân quyền
+
+- Bỏ cột trạng thái onboarding khỏi bảng Tài khoản & Phân quyền vì đây là trạng thái quy trình nội bộ, không cần hiển thị thường xuyên.
+- Giữ thao tác khóa quyền truy cập trong cột Thay đổi Vai trò để Admin vẫn quản lý được quyền đăng nhập.
+
+### 2026-08-26 — Giữ tab khi auth refresh và mở rộng preview payroll
+
+- Tab điều hướng User/HR/Admin được lưu trong query URL (`tab`/`adminTab`) và `sessionStorage`; khi `HRProvider` remount do auth refresh hoặc người dùng chuyển ứng dụng, Portal giữ nguyên màn hình đang mở.
+- `AuthContext` giữ profile/route hiện tại trong lúc `TOKEN_REFRESHED` của cùng user được revalidate, tránh tháo `ProtectedRoute`/`HRProvider` chỉ vì refresh token nền.
+- Không tách thành nhiều bundle/page độc lập: mỗi tab vẫn là SPA view nhưng có URL deep-link, ví dụ `/?adminTab=admin-payroll`.
+- Preview import payroll hiển thị toàn bộ tên cột và giá trị theo đúng thứ tự file Excel, có scroll ngang; file chỉ có cột Tên nhân viên cũng được nhận.
+- Preview không format lại cột tiền: hiển thị đúng chuỗi số nguồn từ Excel, không thêm dấu phân cách/`₫`/làm tròn; kiểu số trong bản ghi tính/lưu không đổi. Dòng `Tổng cộng` vẫn chỉ hiển thị, không được import thành nhân viên.
+- Đối chiếu nhân viên ưu tiên họ tên chuẩn hóa nếu khớp duy nhất (mã legacy được cảnh báo), dùng MSNV khi không có tên; tên trùng hoặc tên/mã trỏ hai hồ sơ khác nhau vẫn bị chặn an toàn.
+- Luồng chọn XLSX bắt buộc đọc được tháng/năm từ tiêu đề bảng lương trước khi tạo preview; không âm thầm dùng kỳ đang chọn trên UI khi file thiếu tiêu đề.
+
+### 2026-08-26 — Sửa parser import bảng lương Excel
+
+- Chuẩn hóa đúng ký tự `Đ/đ` trong header tiếng Việt, khôi phục map `Phụ cấp điện thoại` và các header có dấu tương tự.
+- Loại nhiễu IEEE-754 từ giá trị công thức Excel (ví dụ `247204.55000000002`) trước khi tính Net.
+- Map cột tổng hợp `Thưởng lễ + OT` vào một dòng OT/thưởng dự án, không cộng trùng.
+- Nếu MSNV trong file là mã legacy nhưng họ tên khớp duy nhất với employee master, preview cho phép import kèm cảnh báo; tên trùng nhiều người vẫn bị chặn. Preview cũng tự dựng lại khi danh sách nhân viên tải xong.
+
+### 2026-08-26 — Quên mật khẩu và hồ sơ tài khoản backoffice
+
+- Thêm `ForgotPasswordPage` và `ResetPasswordPage`: gửi email reset với redirect URL theo origin hiện tại, cập nhật mật khẩu qua Supabase Auth rồi đóng recovery session trước khi đăng nhập lại.
+- Thêm `requestPasswordReset` vào `AuthContext`; luồng đổi mật khẩu khi đã đăng nhập vẫn yêu cầu xác thực lại mật khẩu hiện tại và chỉ tác động lên session hiện tại.
+- Admin/HR có menu `Hồ sơ tài khoản`; User dùng khối bảo mật trên `Hồ sơ cá nhân`. Bổ sung redirect URLs cho local, Vercel và `portal.tlconceptsltd.com` trong `supabase/config.toml`.
+
+**Lưu ý triển khai:** sau khi deploy frontend, phải thêm các URL `/auth/reset-password` tương ứng vào Supabase Dashboard → Authentication → URL Configuration nếu project production chưa nạp `supabase/config.toml`.
+
+### 2026-08-26 — Kỳ đánh giá KPI theo ngày hiện tại và mở rộng lịch năm
+
+- `AdminKpiOtView` mặc định chọn tháng/năm hiện tại theo đồng hồ hệ thống thay vì giá trị hardcode.
+- Bộ chọn năm KPI có năm trước để xem lịch sử, năm hiện tại và 10 năm tiếp theo; `KpiRewardsView` dùng cùng phạm vi để User xem dữ liệu tương lai.
+
+### 2026-08-26 — Liên kết phép đã duyệt với ngày công KPI
+
+- `workDays.ts` có hàm tính số ngày phép theo đúng lịch 5,5 ngày/tuần, loại trừ Chủ Nhật/ngày lễ và hỗ trợ request kéo dài qua tháng.
+- `AdminKpiOtView` trừ phép đã duyệt theo từng nhân viên khi hiển thị ngày công và tạo `kpi_monthly.kpi_target`; `KpiRewardsView` hiển thị cùng kết quả cho User.
+- `NewLeaveModal` dùng chung công thức để số ngày ghi vào đơn phép khớp với ngày công KPI/quỹ phép. Đơn `Chờ duyệt`/`Từ chối` không ảnh hưởng KPI.
+
+### 2026-08-26 — User gửi request, Admin duyệt phép/OT/work-event
+
+- Migration production `20260826120000_employee_requests_admin_approval.sql` tách quyền tạo request khỏi back-office: chỉ profile `employee` active được INSERT cho chính mình.
+- RLS và trigger buộc request mới là `Chờ duyệt`, không có approver/comment; User không thể ghi tiền/loại chi trả OT hoặc đổi trạng thái. HR/Kế toán chỉ SELECT, còn UPDATE/approve/reject chỉ dành cho Admin.
+- `NewLeaveModal` có thêm request OT cho User. Kể từ migration `20260827120000_admin_direct_time_entries.sql`, Admin cũng có thể tạo OT trực tiếp; HR/Kế toán vẫn chỉ xem các request này.
+
+### 2026-08-26 — Chặn invitation Edge Function trước service-role side effect
+
+- `create-employee` kiểm tra caller có profile `admin` đang active ngay sau khi xác thực JWT và **trước** `inviteUserByEmail`.
+- User hoặc HR/Kế toán gọi trực tiếp endpoint sẽ nhận `403`; không tạo Auth user và không gửi email. Đây là backend boundary bắt buộc, không dựa vào việc UI có ẩn nút mời nhân viên.
+- Business RBAC đã được đồng bộ trong `AGENTS.md`: User chỉ xem dữ liệu của mình; HR/Kế toán vận hành dữ liệu nhưng không quản lý account/role, không reset/đổi mật khẩu tài khoản khác, và không final approval; mọi role đều có thể tự đổi mật khẩu của chính mình.
+
+### 2026-08-25 — Xóa vĩnh viễn nhân viên đã nghỉ việc
+
+- `AdminEmployeeListView` chỉ hiển thị nút **Xóa vĩnh viễn** khi trạng thái là `Đã nghỉ việc`; Admin phải nhập đúng mã nhân viên trước khi nút xóa được mở.
+- Edge Function `delete-offboarded-employee` xác thực Admin đang hoạt động cùng company, chặn xóa nhân viên chưa nghỉ việc hoặc nhân viên gắn tài khoản Admin, dọn tệp trong Storage, xóa Auth user và record nhân viên (các bảng nghiệp vụ liên quan cascade theo FK). Audit log chỉ giữ lại dấu vết thao tác xóa.
+- Function đã deploy tới Supabase project `xtyjeduckvopbdeokhfn`.
+
+**Verify local:** `npm run typecheck` sạch; function deploy thành công.
+
+### 2026-08-25 — Duyệt hồ sơ onboarding ngay trong portal Admin
+
+- `HRContext` tạo cảnh báo động theo các `profiles.onboarding_status = 'submitted'`; sidebar hiển thị badge số **hồ sơ chờ duyệt** và `Thông báo & Cảnh báo` có filter chuyên biệt.
+- `AdminEmployeeListView` hiển thị khối **Hồ sơ đang chờ duyệt** cho nhân viên tương ứng, với nút `Duyệt hồ sơ`/`Yêu cầu bổ sung`; Admin kiểm tra trực tiếp các phần CCCD, ngân hàng và người thân bên dưới trước khi quyết định.
+- Bỏ nút duyệt khỏi `AdminSettingsView` để tránh hai điểm xử lý; trạng thái profile sau khi duyệt sẽ tự làm cảnh báo biến mất. Mutation đồng thời làm mới danh sách nhân viên.
+- Luồng này chỉ dùng portal/RPC sẵn có, **không gửi email** cho Admin hay nhân viên ở cả bước submit và duyệt.
+- Các bước duyệt, yêu cầu bổ sung, thu hồi lời mời và đánh dấu nghỉ việc dùng `ConfirmationDialog` tái sử dụng (Radix Dialog), thay cho popup browser native; phản hồi sau thao tác vẫn dùng toast hệ thống.
+
+**Verify local:** `npm run typecheck`, `npm run build`, `npm run lint` sạch error (còn 7 warning cũ không liên quan).
+
+### 2026-08-25 — Quản lý vòng đời lời mời kích hoạt
+
+**Migration local:** `20260825114132_invitation_lifecycle_management.sql`.
+- `employee_invitations`: thêm hạn link, lần mở gần nhất, số lần gửi lại, trạng thái thu hồi, trạng thái hoàn tất và lỗi gửi mail cuối cùng; có index cho các lời mời đang chờ.
+- Link chưa dùng chỉ có hiệu lực trong 1 giờ. Sau khi nhân viên đã đi vào luồng hợp lệ/đặt mật khẩu, họ có thể đăng nhập để tiếp tục onboarding dang dở dù link email cũ hết hạn. Thu hồi thì cắt ngay RLS onboarding và hiển thị màn báo rõ ràng cho nhân viên.
+
+**Code:**
+- `manage-employee-invitation` Edge Function xác thực Admin + company, tạo link recovery mới qua Supabase Auth, gửi email qua Resend, lưu audit log; nếu gửi email thất bại, UI cho Admin sao chép link để gửi qua kênh an toàn.
+- `AdminEmployeeListView`: badge trạng thái lời mời, thông tin đã gửi/mở/hết hạn và nút Gửi lại/Thu hồi.
+- `ActivateAccountPage`: xác thực lời mời ngay trước khi cho đặt mật khẩu; lời mời bị hết hạn/thu hồi có thông báo hướng dẫn liên hệ HR.
+
+**Verify local:** `npm run typecheck`, `npm run build`, `npm run lint` sạch error (còn các warning cũ không liên quan).
+
+### 2026-08-25 — Vercel SPA deep-link + production Auth URL
+
+- Thêm `vercel.json` rewrite `/(.*) → /index.html` cho Vite dùng BrowserRouter.
+- Cấu hình Supabase Auth dùng Site URL `https://hr-portal-tl.vercel.app`; allow redirect kích hoạt cho cả production và local.
+- Edge Function `create-employee` dùng `APP_URL` production để tạo link invite; thêm `ALLOWED_ORIGINS` để CORS chấp nhận cả Vercel và local dev.
+
+### 2026-08-25 — Invitation-first employee onboarding (chờ deploy Supabase)
+
+**Migration local:** `20260825100000_invitation_first_employee_onboarding.sql`.
+- Thêm state machine `invited → in_progress → submitted → needs_changes → approved` vào `profiles`; `is_active` chỉ thành `true` sau bước Admin duyệt.
+- Thêm `employee_invitations`, unique email theo công ty, RPC bắt đầu/gửi/duyệt onboarding.
+- `current_company_id()` và `current_employee_id()` chỉ trả dữ liệu cho tài khoản active; exception RLS giới hạn tài khoản onboarding vào đúng hồ sơ, CCCD/ngân hàng/người thân và thư mục Storage của chính họ.
+- Gỡ trigger self-registration của `auth.users`; không còn điểm vào public `auth.signUp`.
+
+**Code:**
+- `create-employee` Edge Function xác thực Admin, gọi `inviteUserByEmail` với redirect `/auth/activate`, rồi gọi RPC tạo nhân viên/profiles/invitation. Cần secret `APP_URL` (ví dụ `http://127.0.0.1:3000` khi dev), đồng thời URL `/auth/activate` phải nằm trong Supabase Auth Redirect URLs.
+- `NewEmployeeModal` chỉ còn 6 field công việc: mã NV, họ tên, email, phòng ban, chức danh, ngày vào làm.
+- `ActivateAccountPage` cho nhân viên đặt mật khẩu lần đầu; `EmployeeOnboardingPage` yêu cầu thông tin cá nhân, CCCD hai mặt, ngân hàng, liên hệ khẩn cấp và gửi hồ sơ; `AdminSettingsView` duyệt hoặc yêu cầu bổ sung hồ sơ đã submit.
+
+**Verify local:** TypeScript typecheck sạch. Chưa thể E2E email/RLS do remote Supabase chưa được link trong checkout này.
+
+### 2026-08-25 — Cho phép self-registration bằng mọi email trong dev
+
+**Migration local:** `20260825075157_allow_any_email_self_registration.sql` (chưa apply remote do checkout chưa link Supabase project).
+- Bỏ giới hạn domain `@tlconceptsltd.com` trong trigger `handle_employee_self_registration`.
+- Giữ tài khoản mới ở trạng thái chờ Admin duyệt (`employees.status = 'Chờ duyệt'`, `profiles.is_active = false`).
+- Harden trigger function bằng `search_path = ''` và thu hồi quyền gọi trực tiếp từ `public`, `anon`, `authenticated`.
+
+**Code:**
+- [LoginPage.tsx](src/pages/LoginPage.tsx) — form đăng ký nhận mọi email hợp lệ; cập nhật label, placeholder và mô tả đúng luồng onboarding/Admin duyệt.
+- [AuthContext.tsx](src/context/AuthContext.tsx) — chuẩn hóa email bằng `trim().toLowerCase()` khi đăng ký và đăng nhập.
+
+**Verify:** typecheck và production build sạch; ESLint không có error (còn 6 warning cũ); test UI local xác nhận `dev.user@gmail.com` không còn bị lỗi domain. Chưa tạo tài khoản test và chưa apply migration lên remote dev.
+
+### 2026-08-25 — Chỉ tiêu KPI theo nhân viên + Phụ lục hợp đồng + Phân loại KPI job (phase7)
+
+**Migration:** `20260824173333_phase7_kpi_target_level_and_contract_addendum.sql` (đã apply + verify qua UI + DB).
+- `employees`: + `kpi_level text`, + `kpi_target_per_day numeric`.
+- `contracts`: + `signed_date date`, + `kpi_target_month numeric`, + `allowance_amount numeric default 0`, + `parent_contract_id uuid → contracts.id` (dùng cho phụ lục), + index trên `parent_contract_id`.
+- `kpi_job_items`: + `category text default 'new_render'` với `check (category in ('new_render','reprocess'))`.
+
+**Code:**
+- [EditProfileModal.tsx](src/components/EditProfileModal.tsx) — thêm card "Chỉ tiêu KPI & Level Vị trí công việc" ở tab Thông tin Chung (input text + `<datalist>` gợi ý level, input số view/ngày).
+- [ContractEditorModal.tsx](src/components/admin/ContractEditorModal.tsx) — thêm field Ngày ký / KPI-tháng / Phụ cấp; type mới `'Phụ lục hợp đồng'` kèm select "Phụ lục của hợp đồng gốc" (`parent_contract_id`).
+- [AdminContractSalaryView.tsx](src/components/admin/AdminContractSalaryView.tsx) — tách `ContractCard`, nhóm hợp đồng gốc + phụ lục lồng nhau (indent + badge "Phụ lục").
+- [workDays.ts](src/utils/workDays.ts) — `getMonthWorkDays(month, year, holidayDates)` giờ nhận mảng ngày lễ và trừ vào `standardWorkDays`; bỏ hẳn `kpiRatePerDay`/`calculatedKpiTarget` khỏi `MonthWorkDaysInfo` (không còn định mức chung).
+- [AdminKpiOtView.tsx](src/components/admin/AdminKpiOtView.tsx) — thay đổi lớn nhất:
+  - Bỏ stepper "Định mức KPI/ngày công" + card "Định mức Cơ sở Tháng"; thêm card "Nghỉ Lễ/Tết" (dùng `useCompanyHolidays()`).
+  - Bảng mới **"KPI tiêu chuẩn tháng cho từng nhân viên"** (level, chỉ tiêu/ngày, ngày công tháng, KPI chuẩn tháng = tích 2 số).
+  - Bảng nhập liệu KPI: thêm cột "Phân loại" (badge New Render/Re Process) + 3 stat card tổng hợp theo phân loại + select phân loại trong modal thêm/sửa job.
+  - Card "Tiến độ KPI từng nhân viên": đổi target dùng riêng từng người + breakdown Render Dự Án vs Chỉnh Sửa.
+  - `handleSyncKpiToProfiles`: đồng bộ `kpi_monthly.kpi_target` theo target riêng từng nhân viên thay vì 1 số chung.
+- [KpiRewardsView.tsx](src/components/KpiRewardsView.tsx) — màn tự xem KPI của nhân viên đồng bộ theo cùng logic (target riêng + holiday-aware).
+
+**Verify:** `npm run lint`/`typecheck`/`build` sạch. Test tay qua Browser: lưu KPI level/target trên hồ sơ → check DB đúng; tạo hợp đồng + phụ lục → hiển thị lồng nhau đúng; thêm ngày lễ giữa tháng → ngày công tự trừ, chỉ tiêu tự tính lại đúng công thức, sync Payroll ghi đúng `kpi_target` vào `kpi_monthly`. Đã dọn data test khỏi DB.
+
+### Trước 2026-08-25 (context từ session trước, suy ra từ git log + working tree, chưa xác minh chi tiết)
+
+- `22ff516` "feat: implement audit logs, expand HR reminders system, and add contract management features" — audit log system, reminders mở rộng, base contract management (trước khi có phase7 ở trên).
+- `ebc1587` "update", `602a320` merge, `3bc9aad` "Update HR Portal project", `a863c57`/`14c4f50`/`ba01fc8` — khởi tạo project (từ AI Studio scaffold ban đầu, xem `README.md` cũ nhắc tới Gemini API — không còn liên quan, app hiện tại chạy hoàn toàn trên Supabase).
+- **Việc dở dang phát hiện trong working tree (chưa commit, KHÔNG phải do session 2026-08-25 tạo ra):** luồng employee self-registration — sửa `AuthContext.tsx` (thêm `signUp`), `LoginPage.tsx` (form đăng ký), `useProfiles.ts` (`useUpdateProfileAccess` để admin bật/tắt tài khoản), `AdminEmployeeListView.tsx` (UI duyệt). Migration tương ứng (`20260825050000_employee_self_registration.sql`) đã viết nhưng **chưa apply**. Session tiếp theo nên hỏi user có muốn hoàn thiện luồng này không trước khi động vào các file trên.

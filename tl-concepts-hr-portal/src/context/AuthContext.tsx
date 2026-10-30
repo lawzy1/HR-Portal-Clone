@@ -1,0 +1,228 @@
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
+import { useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import { ConfirmationDialog } from '../components/ConfirmationDialog';
+import { supabase } from '../lib/supabaseClient';
+import { getUserFacingError, SESSION_EXPIRED_EVENT } from '../lib/userFacingError';
+
+export type AppRole = 'admin' | 'hr' | 'employee';
+
+export interface AuthProfile {
+  id: string;
+  companyId: string;
+  employeeId: string | null;
+  role: AppRole;
+  isActive: boolean;
+  onboardingStatus: 'invited' | 'in_progress' | 'submitted' | 'needs_changes' | 'approved' | 'revoked';
+  onboardingNote: string | null;
+}
+
+interface AuthContextType {
+  session: Session | null;
+  profile: AuthProfile | null;
+  loading: boolean;
+  signIn: (email: string, password: string) => Promise<{ error: string | null }>;
+  requestPasswordReset: (email: string) => Promise<{ error: string | null }>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<{ error: string | null }>;
+  refreshProfile: () => Promise<void>;
+  signOut: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+// Row Level Security on `profiles` is what actually enforces access — this
+// query only ever returns the caller's own row (or nothing, pre-Phase 2
+// bootstrap). See supabase/migrations/00000000000001_foundation.sql.
+async function fetchProfile(userId: string): Promise<AuthProfile | null> {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, company_id, employee_id, role, is_active, onboarding_status, onboarding_note')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+
+  return {
+    id: data.id,
+    companyId: data.company_id,
+    employeeId: data.employee_id,
+    role: data.role,
+    isActive: data.is_active,
+    onboardingStatus: data.onboarding_status as AuthProfile['onboardingStatus'],
+    onboardingNote: data.onboarding_note,
+  };
+}
+
+async function fetchSessionTimeout(companyId: string): Promise<number> {
+  const { data } = await supabase
+    .from('company_settings')
+    .select('session_timeout_minutes')
+    .eq('company_id', companyId)
+    .maybeSingle();
+  return data?.session_timeout_minutes || 30;
+}
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [session, setSession] = useState<Session | null>(null);
+  const [profile, setProfile] = useState<AuthProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const profileRequestId = useRef(0);
+  const lastSessionUserId = useRef<string | null>(null);
+
+  const signOut = useCallback(async () => {
+    await supabase.auth.signOut({ scope: 'local' });
+    queryClient.clear();
+  }, [queryClient]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const syncAuthState = async (nextSession: Session | null) => {
+      const requestId = ++profileRequestId.current;
+      const nextUserId = nextSession?.user?.id ?? null;
+      const isSameUser = Boolean(nextUserId && nextUserId === lastSessionUserId.current);
+      lastSessionUserId.current = nextUserId;
+      setSession(nextSession);
+
+      // TOKEN_REFRESHED/SIGNED_IN events for the current user are normal
+      // background auth activity. Keep the existing profile and route mounted
+      // while it is revalidated; otherwise ProtectedRoute unmounts HRProvider
+      // and every in-memory navigation tab falls back to its first item.
+      if (!isSameUser) {
+        setLoading(true);
+        setProfile(null);
+      }
+
+      if (!nextSession?.user) {
+        if (isMounted && requestId === profileRequestId.current) {
+          setSessionTimeoutMinutes(30);
+          setLoading(false);
+        }
+        return;
+      }
+
+      const nextProfile = await fetchProfile(nextSession.user.id);
+      const nextSessionTimeoutMinutes = nextProfile
+        ? await fetchSessionTimeout(nextProfile.companyId)
+        : 30;
+
+      if (!isMounted || requestId !== profileRequestId.current) return;
+      setProfile(nextProfile);
+      setSessionTimeoutMinutes(nextSessionTimeoutMinutes);
+      setLoading(false);
+    };
+
+    void supabase.auth.getSession().then(({ data }) => syncAuthState(data.session));
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      void syncAuthState(newSession);
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    const showSessionExpiredDialog = () => setSessionExpired(true);
+    window.addEventListener(SESSION_EXPIRED_EVENT, showSessionExpiredDialog);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, showSessionExpiredDialog);
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
+    let timer = window.setTimeout(() => void signOut(), sessionTimeoutMinutes * 60_000);
+    const reset = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => void signOut(), sessionTimeoutMinutes * 60_000);
+    };
+    const events = ['mousedown', 'keydown', 'touchstart', 'scroll'];
+    events.forEach((event) => window.addEventListener(event, reset, { passive: true }));
+    return () => {
+      window.clearTimeout(timer);
+      events.forEach((event) => window.removeEventListener(event, reset));
+    };
+  }, [session, sessionTimeoutMinutes, signOut]);
+
+  const signIn = async (email: string, password: string) => {
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
+    return { error: error ? await getUserFacingError(error, 'Email hoặc mật khẩu không đúng.') : null };
+  };
+
+  const requestPasswordReset = async (email: string) => {
+    const normalizedEmail = email.trim().toLowerCase();
+    // Every other email link in the app (invitation, activation, payslip)
+    // points at a fixed production APP_URL so it works no matter where the
+    // request was triggered from. This is the one client-side exception —
+    // match that instead of window.location.origin, which silently produced
+    // localhost links whenever an Admin tested password reset from their dev machine.
+    const redirectTo = `${import.meta.env.VITE_APP_URL || window.location.origin}/auth/reset-password`;
+    const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, { redirectTo });
+    return { error: error ? await getUserFacingError(error, 'Không thể gửi email đặt lại mật khẩu. Vui lòng thử lại sau.') : null };
+  };
+
+  // Password changes are deliberately scoped to the currently authenticated
+  // user. Re-authentication prevents a stale/unattended session from being
+  // used to change the account password without knowing the current password.
+  const changePassword = async (currentPassword: string, newPassword: string) => {
+    const { data: currentSession } = await supabase.auth.getSession();
+    const email = currentSession.session?.user.email?.trim().toLowerCase();
+    if (!email) return { error: 'Không xác định được email của tài khoản hiện tại.' };
+
+    const { error: reauthenticationError } = await supabase.auth.signInWithPassword({
+      email,
+      password: currentPassword,
+    });
+    if (reauthenticationError) {
+      return { error: await getUserFacingError(reauthenticationError, 'Mật khẩu hiện tại không đúng.') };
+    }
+
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    return { error: error ? await getUserFacingError(error, 'Không thể đổi mật khẩu. Vui lòng thử lại.') : null };
+  };
+
+  const refreshProfile = async () => {
+    const { data } = await supabase.auth.getSession();
+    const nextProfile = data.session?.user ? await fetchProfile(data.session.user.id) : null;
+    setSession(data.session);
+    setProfile(nextProfile);
+    if (nextProfile) setSessionTimeoutMinutes(await fetchSessionTimeout(nextProfile.companyId));
+  };
+
+  const handleExpiredSession = async () => {
+    setIsSigningOut(true);
+    await signOut();
+    setSessionExpired(false);
+    setIsSigningOut(false);
+    navigate('/login', { replace: true });
+  };
+
+  return (
+    <AuthContext.Provider value={{ session, profile, loading, signIn, requestPasswordReset, changePassword, refreshProfile, signOut }}>
+      {children}
+      <ConfirmationDialog
+        open={sessionExpired}
+        onOpenChange={setSessionExpired}
+        title="Phiên đăng nhập đã hết hạn"
+        description="Vui lòng đăng xuất và đăng nhập lại để tiếp tục sử dụng HR Portal."
+        confirmLabel="Đăng xuất & đăng nhập lại"
+        onConfirm={() => void handleExpiredSession()}
+        isPending={isSigningOut}
+        showCancel={false}
+      />
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within an AuthProvider');
+  return ctx;
+};

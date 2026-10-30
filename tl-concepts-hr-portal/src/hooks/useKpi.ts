@@ -1,0 +1,235 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { supabase } from '../lib/supabaseClient';
+import type { Tables, TablesInsert, TablesUpdate } from '../lib/database.types';
+import { refreshQueries } from '../lib/queryRefresh';
+
+export type DbKpiJobItem = Tables<'kpi_job_items'>;
+export type DbKpiMonthly = Tables<'kpi_monthly'>;
+export type DbKpiAdjustment = Tables<'kpi_adjustments'>;
+export type DbCompanyWorkdayOverride = Tables<'company_workday_overrides'>;
+
+/** Optional company-wide standard workday override for one KPI/payroll month. */
+export function useCompanyWorkdayOverride(month: number, year: number) {
+  return useQuery({
+    queryKey: ['company_workday_overrides', month, year],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('company_workday_overrides')
+        .select('*')
+        .eq('month', month)
+        .eq('year', year)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export function useUpsertCompanyWorkdayOverride() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: TablesInsert<'company_workday_overrides'>) => {
+      const { data, error } = await supabase
+        .from('company_workday_overrides')
+        .upsert(input, { onConflict: 'company_id,month,year' })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => refreshQueries(queryClient, [['company_workday_overrides'], ['kpi_monthly']]),
+  });
+}
+
+// employee_id is a required FK now — no more fuzzy assigneeName string
+// matching against employees.full_name like the prototype did.
+export function useKpiJobItems(employeeId: string | undefined, month: number, year: number) {
+  return useQuery({
+    queryKey: ['kpi_job_items', employeeId, month, year],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('kpi_job_items')
+        .select('*')
+        .eq('employee_id', employeeId!)
+        .eq('month', month)
+        .eq('year', year);
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!employeeId,
+  });
+}
+
+// Admin: every job across the company for a given period (assignment board).
+export function useAllKpiJobItems(month: number, year: number) {
+  return useQuery({
+    queryKey: ['kpi_job_items', 'all', month, year],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('kpi_job_items')
+        .select('*, employees(full_name, employee_code, avatar_url)')
+        .eq('month', month)
+        .eq('year', year)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export function useCreateKpiJobItem() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: TablesInsert<'kpi_job_items'>[]) => {
+      const { data, error } = await supabase.from('kpi_job_items').insert(input).select();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      refreshQueries(queryClient, [['kpi_job_items']]);
+    },
+  });
+}
+
+export function useUpdateKpiJobItem() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, updates }: { id: string; updates: TablesUpdate<'kpi_job_items'> }) => {
+      const { data, error } = await supabase.from('kpi_job_items').update(updates).eq('id', id).select().single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      refreshQueries(queryClient, [['kpi_job_items']]);
+    },
+  });
+}
+
+export function useDeleteKpiJobItem() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('kpi_job_items').delete().eq('id', id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      refreshQueries(queryClient, [['kpi_job_items']]);
+    },
+  });
+}
+
+export function useKpiMonthly(employeeId: string | undefined, month: number, year: number) {
+  return useQuery({
+    queryKey: ['kpi_monthly', employeeId, month, year],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('kpi_monthly')
+        .select('*, kpi_adjustments(*)')
+        .eq('employee_id', employeeId!)
+        .eq('month', month)
+        .eq('year', year)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!employeeId,
+  });
+}
+
+export function useAllKpiMonthly(month: number, year: number) {
+  return useQuery({
+    queryKey: ['kpi_monthly', 'all', month, year],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('kpi_monthly')
+        .select('*, employees(full_name, employee_code, avatar_url)')
+        .eq('month', month)
+        .eq('year', year);
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+// Lightweight cross-month fetch for the Admin reminders feed — only the
+// column needed to flag "KPI tháng chờ Admin duyệt", not full monthly detail.
+export function useAllPendingKpiMonthly() {
+  return useQuery({
+    queryKey: ['kpi_monthly', 'pending_approval'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('kpi_monthly')
+        .select('id, employee_id, month, year, created_at, employees(full_name)')
+        .eq('publish_status', 'pending_approval');
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+// Upsert the monthly aggregate (admin "sync KPI to profiles" action).
+export function useUpsertKpiMonthly() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: TablesInsert<'kpi_monthly'>) => {
+      const { data, error } = await supabase
+        .from('kpi_monthly')
+        .upsert(input, { onConflict: 'employee_id,month,year' })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      refreshQueries(queryClient, [['kpi_monthly']]);
+    },
+  });
+}
+
+export function useUpdateKpiMonthly() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, updates }: { id: string; updates: TablesUpdate<'kpi_monthly'> }) => {
+      const { data, error } = await supabase.from('kpi_monthly').update(updates).eq('id', id).select().single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => refreshQueries(queryClient, [['kpi_monthly']]),
+  });
+}
+
+export function useSubmitKpiMonth() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ month, year }: { month: number; year: number }) => {
+      const { data, error } = await supabase.rpc('submit_kpi_month', { p_month: month, p_year: year });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => refreshQueries(queryClient, [['kpi_monthly']]),
+  });
+}
+
+export function useApproveKpiMonth() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ month, year }: { month: number; year: number }) => {
+      const { data, error } = await supabase.rpc('approve_kpi_month', { p_month: month, p_year: year });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => refreshQueries(queryClient, [['kpi_monthly']]),
+  });
+}
+
+export function useRejectKpiMonth() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ month, year, reason }: { month: number; year: number; reason: string }) => {
+      const { data, error } = await supabase.rpc('reject_kpi_month', { p_month: month, p_year: year, p_reason: reason });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => refreshQueries(queryClient, [['kpi_monthly']]),
+  });
+}

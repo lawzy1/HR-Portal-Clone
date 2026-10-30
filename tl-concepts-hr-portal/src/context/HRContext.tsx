@@ -1,0 +1,559 @@
+import React, { createContext, useCallback, useContext, useState, useEffect, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import {
+  TabType,
+  AdminTabType,
+  HrReminder
+} from '../types';
+import { useEmployees, useAllEmployeeSensitiveInfo, type DbEmployee } from '../hooks/useEmployees';
+import { useAllContracts } from '../hooks/useContracts';
+import { useAllLeaveRequests, useAllWorkEvents } from '../hooks/useLeave';
+import { useAllOtRecords } from '../hooks/useOt';
+import { useAllPayrollHistory } from '../hooks/usePayroll';
+import { useAllProfileChangeRequests } from '../hooks/useProfileChangeRequests';
+import { useMarkRemindersRead, useReminderReads } from '../hooks/useReminderReads';
+import { useAllPendingKpiMonthly } from '../hooks/useKpi';
+import { useAllProfiles } from '../hooks/useProfiles';
+import { CONTRACT_EXPIRING_WINDOW_DAYS, employeeNeedsContract } from '../utils/contracts';
+import { useAuth } from './AuthContext';
+
+const DAY_MS = 86_400_000;
+const daysUntil = (date: string) => Math.ceil((new Date(`${date}T00:00:00`).getTime() - Date.now()) / DAY_MS);
+const nextAnnualReview = (date: string) => {
+  const next = new Date(`${date}T00:00:00`);
+  next.setFullYear(next.getFullYear() + 1);
+  return next.toISOString().slice(0, 10);
+};
+
+interface HRContextType {
+  // Active navigation tabs
+  activeTab: TabType;
+  setActiveTab: (tab: TabType) => void;
+  adminTab: AdminTabType;
+  setAdminTab: (tab: AdminTabType) => void;
+
+  // Employees state
+  employees: DbEmployee[];
+  currentEmployee?: DbEmployee;
+  currentEmployeeId: string;
+  setCurrentEmployeeId: (id: string) => void;
+  
+  // Admin selected employee for detailed views
+  selectedEmployeeIdForAdmin: string;
+  setSelectedEmployeeIdForAdmin: (id: string) => void;
+
+  // Read-only "view as user" preview: which employee's payslip screen the admin is previewing, if any
+  viewAsEmployeeId: string | null;
+  setViewAsEmployeeId: (id: string | null) => void;
+
+  // Reminders & Alerts
+  reminders: HrReminder[];
+  pendingOnboardingCount: number;
+  markReminderAsRead: (id: string) => void;
+  resolveReminder: (id: string) => void;
+  markAllRemindersAsRead: () => void;
+
+  // Modal states
+  isNewLeaveModalOpen: boolean;
+  setIsNewLeaveModalOpen: (open: boolean) => void;
+  isEditProfileModalOpen: boolean;
+  setIsEditProfileModalOpen: (open: boolean) => void;
+  selectedProfileChangeRequestId: string | null;
+  setSelectedProfileChangeRequestId: (id: string | null) => void;
+  isImportKpiModalOpen: boolean;
+  setIsImportKpiModalOpen: (open: boolean) => void;
+  isNewEmployeeModalOpen: boolean;
+  setIsNewEmployeeModalOpen: (open: boolean) => void;
+  selectedPayslipId: string | null;
+  setSelectedPayslipId: (id: string | null) => void;
+  
+  // Toast
+  toastMessage: string | null;
+  showToast: (msg: string) => void;
+}
+
+const HRContext = createContext<HRContextType | undefined>(undefined);
+
+const USER_TAB_VALUES: readonly TabType[] = ['dashboard', 'announcements', 'profile', 'contracts', 'payslips', 'leaves', 'kpi'];
+const ADMIN_TAB_VALUES: readonly AdminTabType[] = [
+  'admin-dashboard',
+  'admin-announcements',
+  'admin-profile',
+  'admin-employees',
+  'admin-contracts',
+  'admin-leaves',
+  'admin-kpi',
+  'admin-payroll',
+  'admin-reminders',
+  'admin-reports',
+  'admin-settings',
+];
+
+const isStoredTab = <T extends string>(value: string | null, allowed: readonly T[]): value is T =>
+  value !== null && allowed.includes(value as T);
+
+const readStoredTab = <T extends string>(queryKey: string, storageKey: string, fallback: T, allowed: readonly T[]): T => {
+  if (typeof window === 'undefined') return fallback;
+
+  const fromUrl = new URLSearchParams(window.location.search).get(queryKey);
+  if (isStoredTab(fromUrl, allowed)) return fromUrl;
+
+  try {
+    const fromSession = window.sessionStorage.getItem(storageKey);
+    if (isStoredTab(fromSession, allowed)) return fromSession;
+  } catch {
+    // Private browsing / storage-disabled environments should still be able
+    // to use the portal; the in-memory default remains valid in that case.
+  }
+  return fallback;
+};
+
+const persistTab = (storageKey: string, value: string) => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(storageKey, value);
+  } catch {
+    // URL state below is still sufficient when sessionStorage is unavailable.
+  }
+};
+
+const readStoredReminderIds = (storageKey: string | null): string[] => {
+  if (typeof window === 'undefined' || !storageKey) return [];
+  try {
+    const stored = window.localStorage.getItem(storageKey);
+    const parsed: unknown = stored ? JSON.parse(stored) : [];
+    return Array.isArray(parsed) && parsed.every((id): id is string => typeof id === 'string') ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+
+export const HRProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { profile } = useAuth();
+  const { data: employeesData } = useEmployees();
+  const employees = useMemo(() => employeesData || [], [employeesData]);
+
+  // Active navigation
+  // Keep the selected view in the URL as well as sessionStorage. Auth token
+  // refreshes can briefly remount HRProvider; in-memory-only state then jumps
+  // back to the first tab. A query-backed tab is also directly shareable and
+  // survives switching browser windows/apps without creating separate bundles.
+  const [activeTab, setActiveTabState] = useState<TabType>(() =>
+    readStoredTab('tab', 'tl-hr-active-tab', 'dashboard', USER_TAB_VALUES),
+  );
+  const [adminTab, setAdminTabState] = useState<AdminTabType>(() =>
+    readStoredTab('adminTab', 'tl-hr-active-admin-tab', 'admin-dashboard', ADMIN_TAB_VALUES),
+  );
+
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(location.search).get('tab');
+    if (isStoredTab(fromUrl, USER_TAB_VALUES) && fromUrl !== activeTab) setActiveTabState(fromUrl);
+  }, [activeTab, location.search]);
+
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(location.search).get('adminTab');
+    if (isStoredTab(fromUrl, ADMIN_TAB_VALUES) && fromUrl !== adminTab) setAdminTabState(fromUrl);
+  }, [adminTab, location.search]);
+
+  const setActiveTab = useCallback((tab: TabType) => {
+    setActiveTabState(tab);
+    persistTab('tl-hr-active-tab', tab);
+    const params = new URLSearchParams(location.search);
+    params.delete('adminTab');
+    params.set('tab', tab);
+    navigate({ pathname: location.pathname, search: `?${params.toString()}`, hash: location.hash }, { replace: true });
+  }, [location.hash, location.pathname, location.search, navigate]);
+
+  const setAdminTab = useCallback((tab: AdminTabType) => {
+    setAdminTabState(tab);
+    persistTab('tl-hr-active-admin-tab', tab);
+    const params = new URLSearchParams(location.search);
+    params.delete('tab');
+    params.set('adminTab', tab);
+    navigate({ pathname: location.pathname, search: `?${params.toString()}`, hash: location.hash }, { replace: true });
+  }, [location.hash, location.pathname, location.search, navigate]);
+
+  // Employee Selection
+  // Empty until the real employee list loads; this avoids sending a mock id to
+  // Supabase and keeps the selection stable across refetches.
+  const [currentEmployeeId, setCurrentEmployeeId] = useState<string>('');
+  const [selectedEmployeeIdForAdmin, setSelectedEmployeeIdForAdmin] = useState<string>('');
+  const [viewAsEmployeeId, setViewAsEmployeeId] = useState<string | null>(null);
+
+  // Modals
+  const [isNewLeaveModalOpen, setIsNewLeaveModalOpen] = useState(false);
+  const [isEditProfileModalOpen, setIsEditProfileModalOpen] = useState(false);
+  const [selectedProfileChangeRequestId, setSelectedProfileChangeRequestId] = useState<string | null>(null);
+  const [isImportKpiModalOpen, setIsImportKpiModalOpen] = useState(false);
+  const [isNewEmployeeModalOpen, setIsNewEmployeeModalOpen] = useState(false);
+  const [selectedPayslipId, setSelectedPayslipId] = useState<string | null>(null);
+
+  // Reminder "đã đọc" state lives in public.reminder_reads (per account).
+  const readIdsQuery = useReminderReads(!!profile);
+  const readReminderIds = useMemo(() => readIdsQuery.data ?? [], [readIdsQuery.data]);
+  const readIdsPending = readIdsQuery.isPending;
+  const markRemindersRead = useMarkRemindersRead();
+
+  // One-time move of reads saved by the old localStorage version into the DB.
+  const legacyReminderKey = profile ? `tl-hr-read-reminders:${profile.companyId}:${profile.id}` : null;
+  useEffect(() => {
+    if (!legacyReminderKey || !readIdsQuery.isSuccess) return;
+    const legacyIds = readStoredReminderIds(legacyReminderKey);
+    if (legacyIds.length === 0) return;
+    markRemindersRead.mutate(legacyIds, {
+      onSuccess: () => {
+        try { window.localStorage.removeItem(legacyReminderKey); } catch { /* storage unavailable */ }
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per account after reads load
+  }, [legacyReminderKey, readIdsQuery.isSuccess]);
+
+  const updateReadReminderIds = (ids: string[]) => {
+    const unread = ids.filter(id => !readReminderIds.includes(id));
+    if (unread.length > 0) markRemindersRead.mutate(unread);
+  };
+
+  // Toast message
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 4000);
+  };
+
+  const currentEmployee = useMemo(() => {
+    return employees.find(e => e.id === currentEmployeeId) || employees[0];
+  }, [employees, currentEmployeeId]);
+
+  // Dynamically generated Reminders — sourced from real Supabase data
+  // (employees, contracts, leave_requests, employee_sensitive_info). read/
+  // resolved tracking stays local-only;
+  // there's no reminders table, this is just dismissal state for the UI.
+  const { data: allContractsData, isSuccess: contractsLoaded } = useAllContracts();
+  const allContracts = useMemo(() => allContractsData || [], [allContractsData]);
+  const { data: allLeaveRequestsData } = useAllLeaveRequests();
+  const allLeaveRequests = useMemo(() => allLeaveRequestsData || [], [allLeaveRequestsData]);
+  const { data: allSensitiveInfoData, isSuccess: sensitiveInfoLoaded } = useAllEmployeeSensitiveInfo();
+  const allSensitiveInfo = useMemo(() => allSensitiveInfoData || [], [allSensitiveInfoData]);
+  const { data: allOtData } = useAllOtRecords();
+  const allOt = useMemo(() => allOtData || [], [allOtData]);
+  const { data: allWorkEventsData } = useAllWorkEvents();
+  const allWorkEvents = useMemo(() => allWorkEventsData || [], [allWorkEventsData]);
+  const { data: allPayrollData } = useAllPayrollHistory();
+  const allPayroll = useMemo(() => allPayrollData || [], [allPayrollData]);
+  const { data: allProfileChangeRequestsData } = useAllProfileChangeRequests();
+  const allProfileChangeRequests = useMemo(() => allProfileChangeRequestsData || [], [allProfileChangeRequestsData]);
+  const { data: allPendingKpiMonthlyData } = useAllPendingKpiMonthly();
+  const allPendingKpiMonthly = useMemo(() => allPendingKpiMonthlyData || [], [allPendingKpiMonthlyData]);
+  const { data: allProfilesData } = useAllProfiles();
+  const pendingOnboardingProfiles = useMemo(
+    () => (allProfilesData || []).filter((profile) => profile.onboarding_status === 'submitted'),
+    [allProfilesData],
+  );
+
+  const reminders = useMemo<HrReminder[]>(() => {
+    const generated: HrReminder[] = [];
+    // Read state not loaded yet → show nothing rather than flashing everything as unread.
+    if (readIdsPending) return generated;
+
+    pendingOnboardingProfiles.forEach((profile) => {
+      const employee = profile.employees;
+      if (!profile.employee_id || !employee) return;
+      generated.push({
+        id: `rem-onboarding-${profile.id}`,
+        category: 'onboarding_review',
+        title: 'Hồ sơ nhân viên chờ duyệt',
+        message: `${employee.full_name} đã hoàn tất onboarding. Kiểm tra CCCD, thông tin ngân hàng và người liên hệ trước khi mở quyền truy cập.`,
+        employeeId: profile.employee_id,
+        employeeName: employee.full_name,
+        isRead: readReminderIds.includes(`rem-onboarding-${profile.id}`),
+        createdAt: profile.onboarding_submitted_at || profile.created_at,
+        severity: 'high',
+      });
+    });
+
+    // 1. Contract expiry — most recently started contract per employee, if
+    // it has a finite end date (an indefinite contract has end_date null).
+    const latestContractByEmployee = new Map<string, (typeof allContracts)[number]>();
+    allContracts.forEach(c => {
+      const existing = latestContractByEmployee.get(c.employee_id);
+      if (!existing || c.start_date > existing.start_date) {
+        latestContractByEmployee.set(c.employee_id, c);
+      }
+    });
+    latestContractByEmployee.forEach(c => {
+      if (!c.end_date) return;
+      const remainingDays = daysUntil(c.end_date);
+      if (remainingDays < 0 || remainingDays > CONTRACT_EXPIRING_WINDOW_DAYS) return;
+      const empName = c.employees?.full_name || '';
+      generated.push({
+        id: `rem-ctr-${c.id}`,
+        category: 'contract',
+        title: 'Hợp đồng lao động sắp hết hạn',
+        message: `Hợp đồng của ${empName} sẽ hết hạn ngày ${c.end_date}. Cần tiến hành tái ký hoặc làm thủ tục thanh lý.`,
+        employeeId: c.employee_id,
+        employeeName: empName,
+        dueDate: c.end_date,
+        isRead: readReminderIds.includes(`rem-ctr-${c.id}`),
+        createdAt: c.created_at,
+        severity: remainingDays <= 30 ? 'high' : 'medium',
+      });
+    });
+
+    // 1b. Employee onboarded but no published contract yet.
+    // "Missing X" rules only run once X has loaded; an empty list mid-load
+    // would otherwise flag every employee for a moment.
+    employees.forEach(emp => {
+      if (!contractsLoaded || !employeeNeedsContract(emp, allContracts)) return;
+      generated.push({
+        id: `rem-no-contract-${emp.id}`,
+        category: 'contract_missing',
+        title: 'Nhân viên chưa có hợp đồng',
+        message: `${emp.full_name} đã duyệt hồ sơ nhưng chưa có hợp đồng lao động nào được phát hành.`,
+        employeeId: emp.id,
+        employeeName: emp.full_name,
+        isRead: readReminderIds.includes(`rem-no-contract-${emp.id}`),
+        createdAt: emp.created_at,
+        severity: 'high',
+      });
+    });
+
+    // 2. Salary review due
+    employees.forEach(emp => {
+      if (emp.last_salary_review_date) {
+        const reviewDate = nextAnnualReview(emp.last_salary_review_date);
+        const remainingDays = daysUntil(reviewDate);
+        if (remainingDays > 30) return;
+        generated.push({
+          id: `rem-sal-${emp.id}`,
+          category: 'salary_review',
+          title: 'Đến kỳ xét duyệt / tăng lương',
+          message: `${emp.full_name} ${remainingDays < 0 ? 'đã quá kỳ' : 'đến kỳ'} đánh giá hiệu suất và xem xét điều chỉnh lương.`,
+          employeeId: emp.id,
+          employeeName: emp.full_name,
+          dueDate: reviewDate,
+          isRead: readReminderIds.includes(`rem-sal-${emp.id}`),
+          createdAt: emp.created_at,
+          severity: remainingDays < 0 ? 'high' : 'medium',
+        });
+      }
+    });
+
+    // 3. Missing documents
+    const sensitiveByEmployee = new Map(allSensitiveInfo.map(s => [s.employee_id, s]));
+    employees.forEach(emp => {
+      if (!sensitiveInfoLoaded) return;
+      const info = sensitiveByEmployee.get(emp.id);
+      const missing = [
+        !info?.id_card_front_url && 'ảnh CCCD mặt trước',
+        !info?.id_card_back_url && 'ảnh CCCD mặt sau',
+        !info?.tax_code && 'mã số thuế',
+      ].filter(Boolean);
+      if (missing.length > 0) {
+        generated.push({
+          id: `rem-doc-${emp.id}`,
+          category: 'missing_doc',
+          title: 'Thiếu giấy tờ / hồ sơ cá nhân',
+          message: `Nhân viên ${emp.full_name} còn thiếu: ${missing.join(', ')}.`,
+          employeeId: emp.id,
+          employeeName: emp.full_name,
+          isRead: readReminderIds.includes(`rem-doc-${emp.id}`),
+          createdAt: emp.created_at,
+          severity: 'high',
+        });
+      }
+    });
+
+    // 4. Leave requests pending
+    allLeaveRequests.forEach(lr => {
+      if (lr.status === 'Chờ duyệt') {
+        const empName = lr.employees?.full_name || '';
+        generated.push({
+          id: `rem-lr-${lr.id}`,
+          category: 'leave_request',
+          title: 'Yêu cầu nghỉ phép chờ phê duyệt',
+          message: `${empName} vừa gửi yêu cầu ${lr.leave_type} (${lr.total_days} ngày từ ${lr.start_date}). Lý do: "${lr.reason || ''}"`,
+          employeeId: lr.employee_id,
+          employeeName: empName,
+          dueDate: lr.start_date,
+          isRead: readReminderIds.includes(`rem-lr-${lr.id}`),
+          createdAt: lr.created_at,
+          severity: 'medium',
+        });
+      }
+    });
+
+    // 5. Pending OT and WFH/late requests.
+    allOt.forEach(record => {
+      if (record.status !== 'Chờ duyệt') return;
+      const empName = record.employees?.full_name || '';
+      generated.push({
+        id: `rem-ot-${record.id}`,
+        category: 'ot_request',
+        title: 'Yêu cầu OT chờ phê duyệt',
+        message: `${empName} đăng ký ${record.hours} giờ OT ngày ${record.date}.`,
+        employeeId: record.employee_id,
+        employeeName: empName,
+        dueDate: record.date,
+        isRead: readReminderIds.includes(`rem-ot-${record.id}`),
+        createdAt: record.created_at,
+        severity: 'medium',
+      });
+    });
+
+    allWorkEvents.forEach(record => {
+      if (record.status !== 'Chờ duyệt') return;
+      const empName = record.employees?.full_name || '';
+      generated.push({
+        id: `rem-work-${record.id}`,
+        category: 'work_event',
+        title: 'Yêu cầu WFH/đi muộn chờ duyệt',
+        message: `${empName} gửi yêu cầu ${record.event_type === 'extra_wfh' ? 'WFH thêm' : 'đi trễ'} ngày ${record.event_date}.${record.reason ? ` Lý do: "${record.reason}"` : ''}`,
+        employeeId: record.employee_id,
+        employeeName: empName,
+        dueDate: record.event_date,
+        isRead: readReminderIds.includes(`rem-work-${record.id}`),
+        createdAt: record.created_at,
+        severity: 'medium',
+      });
+    });
+
+    // 6. Payroll pending Admin approval.
+    allPayroll.forEach(record => {
+      const empName = record.employees?.full_name || '';
+      if (record.publish_status === 'pending_approval') {
+        generated.push({
+          id: `rem-pay-approve-${record.id}`,
+          category: 'payroll',
+          title: 'Phiếu lương chờ Admin duyệt',
+          message: `Phiếu lương tháng ${record.month}/${record.year} của ${empName} đang chờ Admin duyệt và phát hành.`,
+          employeeId: record.employee_id,
+          employeeName: empName,
+          isRead: readReminderIds.includes(`rem-pay-approve-${record.id}`),
+          createdAt: record.created_at,
+          severity: 'medium',
+        });
+      }
+    });
+
+    // 8. Contracts pending Admin approval.
+    allContracts.forEach(c => {
+      if (c.publish_status !== 'pending_approval') return;
+      const empName = c.employees?.full_name || '';
+      generated.push({
+        id: `rem-ctr-approve-${c.id}`,
+        category: 'contract',
+        title: 'Hợp đồng chờ Admin duyệt',
+        message: `Hợp đồng ${c.contract_code} của ${empName} đang chờ Admin duyệt và áp dụng. Nhân viên chưa thấy được hợp đồng này cho đến khi được duyệt.`,
+        employeeId: c.employee_id,
+        employeeName: empName,
+        isRead: readReminderIds.includes(`rem-ctr-approve-${c.id}`),
+        createdAt: c.created_at,
+        severity: 'medium',
+      });
+    });
+
+    // 9. KPI tháng chờ Admin duyệt.
+    allPendingKpiMonthly.forEach(record => {
+      const empName = record.employees?.full_name || '';
+      generated.push({
+        id: `rem-kpi-approve-${record.id}`,
+        category: 'kpi',
+        title: 'KPI tháng chờ Admin duyệt',
+        message: `Bảng KPI tháng ${record.month}/${record.year} của ${empName} đang chờ Admin duyệt và phát hành.`,
+        employeeId: record.employee_id,
+        employeeName: empName,
+        isRead: readReminderIds.includes(`rem-kpi-approve-${record.id}`),
+        createdAt: record.created_at,
+        severity: 'medium',
+      });
+    });
+
+    // 7. Employee profile change requests pending review.
+    allProfileChangeRequests.forEach(req => {
+      if (req.status !== 'pending') return;
+      const empName = req.employees?.full_name || '';
+      generated.push({
+        id: `rem-pcr-${req.id}`,
+        category: 'profile_change_request',
+        title: 'Yêu cầu thay đổi thông tin hồ sơ',
+        message: `${empName} gửi yêu cầu: "${req.message}"`,
+        employeeId: req.employee_id,
+        employeeName: empName,
+        profileChangeRequestId: req.id,
+        isRead: readReminderIds.includes(`rem-pcr-${req.id}`),
+        createdAt: req.created_at,
+        severity: 'medium',
+      });
+    });
+
+    return generated;
+  }, [pendingOnboardingProfiles, employees, allContracts, allLeaveRequests, allSensitiveInfo, allOt, allWorkEvents, allPayroll, allProfileChangeRequests, allPendingKpiMonthly, readReminderIds, readIdsPending, contractsLoaded, sensitiveInfoLoaded]);
+
+  const markReminderAsRead = (id: string) => {
+    updateReadReminderIds([id]);
+  };
+
+  const resolveReminder = (id: string) => {
+    updateReadReminderIds([id]);
+    showToast('Đã đánh dấu đã đọc.');
+  };
+
+  const markAllRemindersAsRead = () => {
+    updateReadReminderIds(reminders.map(r => r.id));
+    showToast('Đã đánh dấu tất cả thông báo là đã đọc.');
+  };
+
+  return (
+    <HRContext.Provider
+      value={{
+        activeTab,
+        setActiveTab,
+        adminTab,
+        setAdminTab,
+        employees,
+        currentEmployee,
+        currentEmployeeId,
+        setCurrentEmployeeId,
+        selectedEmployeeIdForAdmin,
+        setSelectedEmployeeIdForAdmin,
+        viewAsEmployeeId,
+        setViewAsEmployeeId,
+        reminders,
+        pendingOnboardingCount: pendingOnboardingProfiles.length,
+        markReminderAsRead,
+        resolveReminder,
+        markAllRemindersAsRead,
+        isNewLeaveModalOpen,
+        setIsNewLeaveModalOpen,
+        isEditProfileModalOpen,
+        setIsEditProfileModalOpen,
+        selectedProfileChangeRequestId,
+        setSelectedProfileChangeRequestId,
+        isImportKpiModalOpen,
+        setIsImportKpiModalOpen,
+        isNewEmployeeModalOpen,
+        setIsNewEmployeeModalOpen,
+        selectedPayslipId,
+        setSelectedPayslipId,
+        toastMessage,
+        showToast,
+      }}
+    >
+      {children}
+    </HRContext.Provider>
+  );
+};
+
+export const useHR = () => {
+  const context = useContext(HRContext);
+  if (!context) {
+    throw new Error('useHR must be used within an HRProvider');
+  }
+  return context;
+};

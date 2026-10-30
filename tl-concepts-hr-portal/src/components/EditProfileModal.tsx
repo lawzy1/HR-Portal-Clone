@@ -1,0 +1,1179 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { useHR } from '../context/HRContext';
+import { useAuth } from '../context/AuthContext';
+import {
+  useEmployee,
+  useUpdateEmployee,
+  useEmployeeSensitiveInfo,
+  useUpsertEmployeeSensitiveInfo,
+  useEmployeeRelatives,
+  useSetEmployeeRelatives,
+  type RelativeInput,
+} from '../hooks/useEmployees';
+import { useFileUpload, useSignedImageUrl, AVATAR_TRANSFORM } from '../hooks/useFileUpload';
+import { useRequestOwnProfileChange } from '../hooks/useProfileChangeRequest';
+import { useAllProfileChangeRequests, useApproveProfileChangeRequest } from '../hooks/useProfileChangeRequests';
+import { useContracts, type DbContract } from '../hooks/useContracts';
+import { ContractEditorModal } from './admin/ContractEditorModal';
+import { getUserFacingError } from '../lib/userFacingError';
+import { CurrencyInput } from './CurrencyInput';
+import {
+  X,
+  User,
+  CreditCard,
+  Landmark,
+  Users,
+  Save,
+  Upload,
+  Plus,
+  Trash2,
+  Camera,
+  MapPin,
+  Briefcase,
+  Smartphone,
+  Lock,
+  Loader2,
+  Award,
+  Send,
+} from 'lucide-react';
+
+import { KPI_LEVEL_SUGGESTIONS } from '../constants/kpiLevels';
+import { buildProfileChangeProposal, hasProfileChanges, type ProfileChangeProposal } from '../utils/profileChangeProposal';
+
+const PROFILE_CHANGE_FIELD_LABELS: Record<string, string> = {
+  avatar_url: 'Ảnh đại diện',
+  dob: 'Ngày sinh',
+  gender: 'Giới tính',
+  marital_status: 'Tình trạng hôn nhân',
+  phone: 'Số điện thoại',
+  permanent_address: 'Địa chỉ thường trú',
+  temporary_address: 'Địa chỉ tạm trú',
+  id_card_number: 'Số CCCD / Hộ chiếu',
+  id_card_issue_date: 'Ngày cấp CCCD',
+  id_card_issue_place: 'Nơi cấp CCCD',
+  tax_code: 'Mã số thuế',
+  social_insurance_code: 'Mã BHXH',
+  id_card_front_url: 'Ảnh mặt trước CCCD',
+  id_card_back_url: 'Ảnh mặt sau CCCD',
+  vneid_residency_url: 'Ảnh thông tin cư trú VNeID',
+  bank_name: 'Ngân hàng',
+  bank_account_number: 'Số tài khoản',
+  bank_account_holder: 'Tên chủ tài khoản',
+  bank_branch: 'Chi nhánh ngân hàng',
+};
+
+// Renders a stored Storage path as a signed preview, or a freshly-picked
+// local file before it's uploaded — one component instead of repeating the
+// "which URL do I show" logic for avatar / CCCD front / back / VNeID.
+const ImageUploadSlot: React.FC<{
+  label: string;
+  path: string | null;
+  pendingFile: File | null;
+  onPick: (file: File) => void;
+  onClear?: () => void;
+  disabled?: boolean;
+  heightClass?: string;
+  objectFitClass?: 'object-cover' | 'object-contain';
+}> = ({ label, path, pendingFile, onPick, onClear, disabled, heightClass = 'h-40', objectFitClass = 'object-cover' }) => {
+  const { data: signedUrl } = useSignedImageUrl(pendingFile ? null : path);
+  const previewUrl = pendingFile ? URL.createObjectURL(pendingFile) : null;
+
+  return (
+    <div className="border-2 border-dashed border-slate-300 rounded-2xl p-3 bg-slate-50 text-center relative group">
+      <p className="text-[11px] font-bold text-slate-700 mb-2">{label}</p>
+      {previewUrl ? (
+        <div className="relative">
+          <img src={previewUrl} alt={label} className={`w-full ${heightClass} ${objectFitClass} rounded-xl border border-slate-200 bg-slate-100`} />
+          {!disabled && (
+            <label className="absolute inset-0 bg-slate-900/70 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center text-white text-xs font-bold cursor-pointer rounded-xl transition-opacity gap-1.5">
+              <Upload className="w-6 h-6 text-success-400" />
+              <span>Thay đổi ảnh</span>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => e.target.files?.[0] && onPick(e.target.files[0])}
+              />
+              {onClear && (
+                <button type="button" onClick={onClear} className="px-2.5 py-1 bg-white/20 hover:bg-white/30 rounded-lg text-[11px]">
+                  Xóa ảnh
+                </button>
+              )}
+            </label>
+          )}
+        </div>
+      ) : path ? (
+        <div className="flex h-36 flex-col items-center justify-center gap-2 text-xs text-slate-500">
+          <a href={signedUrl ?? undefined} target="_blank" rel="noreferrer" className="font-bold text-primary-600 hover:underline">Xem ảnh hiện tại</a>
+          {!disabled && (
+            <label className="cursor-pointer font-bold text-slate-700">
+              Thay đổi ảnh
+              <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && onPick(e.target.files[0])} />
+            </label>
+          )}
+        </div>
+      ) : disabled ? (
+        <div className="flex flex-col items-center justify-center h-36 text-slate-400 text-xs">
+          <span>Chưa có ảnh</span>
+        </div>
+      ) : (
+        <label className="flex flex-col items-center justify-center h-36 cursor-pointer text-slate-500 hover:text-primary-600 transition-colors">
+          <Upload className="w-7 h-7 mb-1 text-slate-400" />
+          <span className="text-xs font-bold">Chọn tệp ảnh</span>
+          <span className="text-[10px] text-slate-400">PNG, JPG, WEBP từ máy tính</span>
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => e.target.files?.[0] && onPick(e.target.files[0])}
+          />
+        </label>
+      )}
+    </div>
+  );
+};
+
+export const EditProfileModal: React.FC = () => {
+  const {
+    selectedEmployeeIdForAdmin,
+    isEditProfileModalOpen,
+    setIsEditProfileModalOpen,
+    selectedProfileChangeRequestId,
+    setSelectedProfileChangeRequestId,
+    showToast,
+  } = useHR();
+  const { profile } = useAuth();
+  // Back-office screens are shared by Admin and HR/Kế toán. RLS still keeps
+  // account management and final approvals Admin-only.
+  const isAdmin = profile?.role === 'admin' || profile?.role === 'hr';
+  const canApproveProfileChange = profile?.role === 'admin';
+
+  // Which employee this modal is editing: an admin edits whoever they
+  // selected in the employee list; a non-admin only ever edits themselves.
+  const targetEmployeeId = isAdmin ? selectedEmployeeIdForAdmin : profile?.employeeId ?? undefined;
+
+  const { data: employee } = useEmployee(targetEmployeeId);
+  const { data: sensitiveInfo } = useEmployeeSensitiveInfo(targetEmployeeId);
+  const { data: relativesData } = useEmployeeRelatives(targetEmployeeId);
+  const { data: employeeContracts } = useContracts(targetEmployeeId);
+  const { data: profileChangeRequests } = useAllProfileChangeRequests();
+  const reviewRequest = profileChangeRequests?.find((request) => request.id === selectedProfileChangeRequestId);
+  const reviewProposal = reviewRequest?.proposed_changes as ProfileChangeProposal | undefined;
+  const hasStructuredReview = !!reviewProposal && hasProfileChanges(reviewProposal);
+  const [editingContract, setEditingContract] = useState<DbContract | null | undefined>(undefined);
+  const latestContract = useMemo(
+    () => [...(employeeContracts || [])].sort((a, b) => b.start_date.localeCompare(a.start_date))[0],
+    [employeeContracts]
+  );
+
+  const updateEmployee = useUpdateEmployee();
+  const upsertSensitiveInfo = useUpsertEmployeeSensitiveInfo();
+  const setRelatives = useSetEmployeeRelatives();
+  const { uploadFile } = useFileUpload();
+  const requestProfileChange = useRequestOwnProfileChange();
+  const approveProfileChange = useApproveProfileChangeRequest();
+
+  const [activeTab, setActiveTab] = useState<'general' | 'employment' | 'contact' | 'documents' | 'bank' | 'relatives'>('general');
+  const [isSaving, setIsSaving] = useState(false);
+  const [changeRequestMessage, setChangeRequestMessage] = useState('');
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+
+  // Tab 1: General (avatar/dob/gender/marital self-editable; the rest is
+  // admin-only — see the enforce_employee_self_edit_columns trigger)
+  const [fullName, setFullName] = useState('');
+  const [employeeCode, setEmployeeCode] = useState('');
+  const [jobTitle, setJobTitle] = useState('');
+  const [department, setDepartment] = useState('');
+  const [status, setStatus] = useState('Chính thức');
+  const [avatarPath, setAvatarPath] = useState<string | null>(null);
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [dob, setDob] = useState('');
+  const [gender, setGender] = useState<'Nam' | 'Nữ' | 'Khác'>('Nam');
+  const [maritalStatus, setMaritalStatus] = useState<'Độc thân' | 'Đã kết hôn'>('Độc thân');
+  const [kpiLevel, setKpiLevel] = useState('');
+  const [kpiTargetPerDay, setKpiTargetPerDay] = useState<number | ''>('');
+  const [performanceCommissionRate, setPerformanceCommissionRate] = useState<number>(0);
+  const [qcCommissionRate, setQcCommissionRate] = useState<number>(0);
+  const [guaranteedIncomeAmount, setGuaranteedIncomeAmount] = useState<number>(0);
+
+  // Tab 2: Employment snapshot (admin-only). Contract history itself lives
+  // in the Contracts module (M3), not here.
+  const [startDate, setStartDate] = useState('');
+  const [contractType, setContractType] = useState('HĐ xác định thời hạn (1 năm)');
+  const [currentSalary, setCurrentSalary] = useState<number>(0);
+  const [lastSalaryReviewDate, setLastSalaryReviewDate] = useState('');
+
+  // Tab 3: Contact & Address (self-editable)
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [permanentAddress, setPermanentAddress] = useState('');
+  const [temporaryAddress, setTemporaryAddress] = useState('');
+
+  // Tab 4: Documents (employee_sensitive_info — self-editable)
+  const [idCardNumber, setIdCardNumber] = useState('');
+  const [idCardIssueDate, setIdCardIssueDate] = useState('');
+  const [idCardIssuePlace, setIdCardIssuePlace] = useState('');
+  const [taxCode, setTaxCode] = useState('');
+  const [socialInsuranceCode, setSocialInsuranceCode] = useState('');
+  const [idCardFrontPath, setIdCardFrontPath] = useState<string | null>(null);
+  const [idCardFrontFile, setIdCardFrontFile] = useState<File | null>(null);
+  const [idCardBackPath, setIdCardBackPath] = useState<string | null>(null);
+  const [idCardBackFile, setIdCardBackFile] = useState<File | null>(null);
+  const [vneidPath, setVneidPath] = useState<string | null>(null);
+  const [vneidFile, setVneidFile] = useState<File | null>(null);
+
+  // Tab 5: Bank (employee_sensitive_info — self-editable)
+  const [bankName, setBankName] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
+  const [accountHolder, setAccountHolder] = useState('');
+  const [bankBranch, setBankBranch] = useState('');
+
+  // Tab 6: Relatives (self-editable)
+  const [relatives, setRelativesState] = useState<(RelativeInput & { id: string })[]>([]);
+
+  const proposedFieldLabels = useMemo(() => {
+    if (!reviewProposal) return [];
+    const keys = [...Object.keys(reviewProposal.employee || {}), ...Object.keys(reviewProposal.sensitive || {})];
+    return [...keys.map((key) => PROFILE_CHANGE_FIELD_LABELS[key] || key), ...(reviewProposal.relatives ? ['Người thân & liên hệ khẩn cấp'] : [])];
+  }, [reviewProposal]);
+  const proposedTabs = useMemo(() => {
+    const result = new Set<typeof activeTab>();
+    const employeeKeys = Object.keys(reviewProposal?.employee || {});
+    const sensitiveKeys = Object.keys(reviewProposal?.sensitive || {});
+    if (employeeKeys.some((key) => ['avatar_url', 'dob', 'gender', 'marital_status'].includes(key))) result.add('general');
+    if (employeeKeys.some((key) => ['phone', 'permanent_address', 'temporary_address'].includes(key))) result.add('contact');
+    if (sensitiveKeys.some((key) => key.startsWith('bank_'))) result.add('bank');
+    if (sensitiveKeys.some((key) => !key.startsWith('bank_'))) result.add('documents');
+    if (reviewProposal?.relatives) result.add('relatives');
+    return result;
+  }, [reviewProposal]);
+
+  useEffect(() => {
+    if (isEditProfileModalOpen) {
+      setActiveTab('general');
+      setChangeRequestMessage('');
+      setValidationErrors({});
+      return;
+    }
+    setSelectedProfileChangeRequestId(null);
+  }, [isEditProfileModalOpen, setSelectedProfileChangeRequestId]);
+
+  useEffect(() => {
+    if (!isEditProfileModalOpen || !employee) return;
+
+    setFullName(employee.full_name || '');
+    setEmployeeCode(employee.employee_code || '');
+    setJobTitle(employee.job_title || '');
+    setDepartment(employee.department || '');
+    setStatus(employee.status || 'Chính thức');
+    setAvatarPath(employee.avatar_url);
+    setAvatarFile(null);
+    setDob(employee.dob || '');
+    setGender((employee.gender as 'Nam' | 'Nữ' | 'Khác') || 'Nam');
+    setMaritalStatus((employee.marital_status as 'Độc thân' | 'Đã kết hôn') || 'Độc thân');
+    setKpiLevel(employee.kpi_level || '');
+    setKpiTargetPerDay(employee.kpi_target_per_day ?? '');
+    setPerformanceCommissionRate(employee.performance_commission_rate || 0);
+    setQcCommissionRate(employee.qc_commission_rate || 0);
+    setGuaranteedIncomeAmount(employee.guaranteed_income_amount || 0);
+
+    setStartDate(employee.start_date || '');
+    setContractType(employee.contract_type || 'HĐ xác định thời hạn (1 năm)');
+    setCurrentSalary(employee.current_salary || 0);
+    setLastSalaryReviewDate(employee.last_salary_review_date || '');
+
+    setPhone(employee.phone || '');
+    setEmail(employee.email || '');
+    setPermanentAddress(employee.permanent_address || '');
+    setTemporaryAddress(employee.temporary_address || '');
+  }, [employee, isEditProfileModalOpen]);
+
+  useEffect(() => {
+    if (!isEditProfileModalOpen) return;
+    setIdCardNumber(sensitiveInfo?.id_card_number || '');
+    setIdCardIssueDate(sensitiveInfo?.id_card_issue_date || '');
+    setIdCardIssuePlace(sensitiveInfo?.id_card_issue_place || '');
+    setTaxCode(sensitiveInfo?.tax_code || '');
+    setSocialInsuranceCode(sensitiveInfo?.social_insurance_code || '');
+    setIdCardFrontPath(sensitiveInfo?.id_card_front_url ?? null);
+    setIdCardFrontFile(null);
+    setIdCardBackPath(sensitiveInfo?.id_card_back_url ?? null);
+    setIdCardBackFile(null);
+    setVneidPath(sensitiveInfo?.vneid_residency_url ?? null);
+    setVneidFile(null);
+    setBankName(sensitiveInfo?.bank_name || '');
+    setAccountNumber(sensitiveInfo?.bank_account_number || '');
+    setAccountHolder(sensitiveInfo?.bank_account_holder || '');
+    setBankBranch(sensitiveInfo?.bank_branch || '');
+  }, [sensitiveInfo, isEditProfileModalOpen]);
+
+  useEffect(() => {
+    if (!isEditProfileModalOpen) return;
+    setRelativesState(
+      (relativesData || []).map((r) => ({
+        id: r.id,
+        fullName: r.full_name,
+        relationship: r.relationship || '',
+        phone: r.phone || '',
+        address: r.address || '',
+        isEmergencyContact: r.is_emergency_contact,
+      }))
+    );
+  }, [relativesData, isEditProfileModalOpen]);
+
+  useEffect(() => {
+    if (!isEditProfileModalOpen || !reviewProposal) return;
+    const employeeChanges = reviewProposal.employee;
+    const sensitiveChanges = reviewProposal.sensitive;
+
+    if (employeeChanges) {
+      if ('avatar_url' in employeeChanges) setAvatarPath(employeeChanges.avatar_url ?? null);
+      if ('dob' in employeeChanges) setDob(employeeChanges.dob ?? '');
+      if ('gender' in employeeChanges) setGender(employeeChanges.gender as 'Nam' | 'Nữ' | 'Khác');
+      if ('marital_status' in employeeChanges) setMaritalStatus(employeeChanges.marital_status as 'Độc thân' | 'Đã kết hôn');
+      if ('phone' in employeeChanges) setPhone(employeeChanges.phone ?? '');
+      if ('permanent_address' in employeeChanges) setPermanentAddress(employeeChanges.permanent_address ?? '');
+      if ('temporary_address' in employeeChanges) setTemporaryAddress(employeeChanges.temporary_address ?? '');
+    }
+    if (sensitiveChanges) {
+      if ('id_card_number' in sensitiveChanges) setIdCardNumber(sensitiveChanges.id_card_number ?? '');
+      if ('id_card_issue_date' in sensitiveChanges) setIdCardIssueDate(sensitiveChanges.id_card_issue_date ?? '');
+      if ('id_card_issue_place' in sensitiveChanges) setIdCardIssuePlace(sensitiveChanges.id_card_issue_place ?? '');
+      if ('tax_code' in sensitiveChanges) setTaxCode(sensitiveChanges.tax_code ?? '');
+      if ('social_insurance_code' in sensitiveChanges) setSocialInsuranceCode(sensitiveChanges.social_insurance_code ?? '');
+      if ('id_card_front_url' in sensitiveChanges) setIdCardFrontPath(sensitiveChanges.id_card_front_url ?? null);
+      if ('id_card_back_url' in sensitiveChanges) setIdCardBackPath(sensitiveChanges.id_card_back_url ?? null);
+      if ('vneid_residency_url' in sensitiveChanges) setVneidPath(sensitiveChanges.vneid_residency_url ?? null);
+      if ('bank_name' in sensitiveChanges) setBankName(sensitiveChanges.bank_name ?? '');
+      if ('bank_account_number' in sensitiveChanges) setAccountNumber(sensitiveChanges.bank_account_number ?? '');
+      if ('bank_account_holder' in sensitiveChanges) setAccountHolder(sensitiveChanges.bank_account_holder ?? '');
+      if ('bank_branch' in sensitiveChanges) setBankBranch(sensitiveChanges.bank_branch ?? '');
+    }
+    if (reviewProposal.relatives) {
+      setRelativesState(reviewProposal.relatives.map((relative, index) => ({
+        id: `proposed-${index}`,
+        fullName: relative.full_name,
+        relationship: relative.relationship,
+        phone: relative.phone,
+        address: relative.address,
+        isEmergencyContact: relative.is_emergency_contact,
+      })));
+    }
+
+    if (employeeChanges && Object.keys(employeeChanges).some((key) => ['avatar_url', 'dob', 'gender', 'marital_status'].includes(key))) setActiveTab('general');
+    else if (employeeChanges) setActiveTab('contact');
+    else if (sensitiveChanges && Object.keys(sensitiveChanges).some((key) => key.startsWith('bank_'))) setActiveTab('bank');
+    else if (sensitiveChanges) setActiveTab('documents');
+    else if (reviewProposal.relatives) setActiveTab('relatives');
+  }, [isEditProfileModalOpen, reviewProposal, employee, sensitiveInfo, relativesData]);
+
+  const targetLabel = useMemo(() => employee?.full_name || '...', [employee]);
+
+  if (!isEditProfileModalOpen) return null;
+
+  if (!targetEmployeeId || !employee || employee.id !== targetEmployeeId || (selectedProfileChangeRequestId && !reviewRequest)) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 text-center border border-slate-200">
+          <Loader2 className="w-7 h-7 mx-auto mb-3 text-primary-600 animate-spin" />
+          <p className="text-sm font-semibold text-slate-800">
+            {targetEmployeeId ? 'Đang tải hồ sơ và nội dung đề xuất...' : 'Không xác định được nhân viên cần chỉnh sửa.'}
+          </p>
+          <button
+            type="button"
+            onClick={() => setIsEditProfileModalOpen(false)}
+            className="mt-4 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold cursor-pointer"
+          >
+            Đóng
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const handleAddRelative = () => {
+    setRelativesState([
+      ...relatives,
+      { id: 'new-' + Date.now(), fullName: '', relationship: 'Người thân', phone: '', address: '', isEmergencyContact: relatives.length === 0 },
+    ]);
+  };
+
+  const handleRemoveRelative = (id: string) => {
+    setRelativesState(relatives.filter((r) => r.id !== id));
+  };
+
+  const validateProfileForm = () => {
+    const errors: Record<string, string> = {};
+    const phonePattern = /^(?:\+84|0)(?:3|5|7|8|9)\d{8}$/;
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const identifierPattern = /^[A-Za-z0-9]{6,20}$/;
+    const taxCodePattern = /^\d{10}(?:-\d{3})?$/;
+    const socialInsurancePattern = /^\d{10}$/;
+    const accountNumberPattern = /^\d{6,20}$/;
+    const today = new Date().toISOString().slice(0, 10);
+
+    if (!isAdmin && changeRequestMessage.trim().length < 5) errors.changeRequestMessage = 'Vui lòng nhập lý do thay đổi từ 5 ký tự.';
+    if (isAdmin && !fullName.trim()) errors.fullName = 'Vui lòng nhập họ và tên.';
+    if (isAdmin && !employeeCode.trim()) errors.employeeCode = 'Vui lòng nhập mã nhân viên.';
+    if (isAdmin && !jobTitle.trim()) errors.jobTitle = 'Vui lòng nhập chức danh công việc.';
+    if (!phone.trim()) errors.phone = 'Vui lòng nhập số điện thoại.';
+    else if (!phonePattern.test(phone.replace(/[\s.-]/g, ''))) errors.phone = 'Số điện thoại phải có dạng 0xxxxxxxxx hoặc +84xxxxxxxxx.';
+    if (isAdmin && email.trim() && !emailPattern.test(email.trim())) errors.email = 'Email không đúng định dạng.';
+    if (dob && dob > today) errors.dob = 'Ngày sinh không thể ở tương lai.';
+    if (isAdmin && startDate && startDate > today) errors.startDate = 'Ngày bắt đầu không thể ở tương lai.';
+    if (lastSalaryReviewDate && lastSalaryReviewDate > today) errors.lastSalaryReviewDate = 'Ngày review lương không thể ở tương lai.';
+
+    if (isAdmin) {
+      if (!Number.isFinite(currentSalary) || currentSalary < 0) errors.currentSalary = 'Mức lương phải là số không âm.';
+      if (kpiTargetPerDay !== '' && (!Number.isFinite(kpiTargetPerDay) || kpiTargetPerDay < 0)) errors.kpiTargetPerDay = 'Chỉ tiêu KPI phải là số không âm.';
+      if (performanceCommissionRate < 0) errors.performanceCommissionRate = 'Mức commission phải là số không âm.';
+      if (qcCommissionRate < 0) errors.qcCommissionRate = 'Mức commission phải là số không âm.';
+      if (guaranteedIncomeAmount < 0) errors.guaranteedIncomeAmount = 'Mức đảm bảo phải là số không âm.';
+    }
+
+    if (idCardNumber.trim() && !identifierPattern.test(idCardNumber.trim())) errors.idCardNumber = 'CCCD/Hộ chiếu chỉ gồm 6-20 ký tự chữ và số.';
+    if (idCardIssueDate && idCardIssueDate > today) errors.idCardIssueDate = 'Ngày cấp không thể ở tương lai.';
+    if (taxCode.trim() && !taxCodePattern.test(taxCode.trim())) errors.taxCode = 'MST phải gồm 10 số hoặc dạng 10 số-3 số.';
+    if (socialInsuranceCode.trim() && !socialInsurancePattern.test(socialInsuranceCode.trim())) errors.socialInsuranceCode = 'Mã BHXH phải gồm đúng 10 chữ số.';
+
+    const hasBankInfo = [bankName, accountNumber, accountHolder, bankBranch].some((value) => value.trim());
+    if (hasBankInfo && !bankName.trim()) errors.bankName = 'Đã nhập thông tin ngân hàng, cần bổ sung tên ngân hàng.';
+    if (hasBankInfo && !accountNumberPattern.test(accountNumber.trim())) errors.accountNumber = 'Số tài khoản phải gồm 6-20 chữ số.';
+    if (hasBankInfo && !accountHolder.trim()) errors.accountHolder = 'Vui lòng nhập tên chủ tài khoản.';
+
+    relatives.forEach((relative, index) => {
+      if (!relative.fullName.trim()) errors[`relative-${index}`] = `Vui lòng nhập họ tên người thân #${index + 1}.`;
+      if (relative.phone.trim() && !phonePattern.test(relative.phone.replace(/[\s.-]/g, ''))) {
+        errors[`relative-phone-${index}`] = `Số điện thoại người thân #${index + 1} không đúng định dạng.`;
+      }
+    });
+
+    const imageFiles = [
+      ['avatarFile', avatarFile],
+      ['idCardFrontFile', idCardFrontFile],
+      ['idCardBackFile', idCardBackFile],
+      ['vneidFile', vneidFile],
+    ] as const;
+    imageFiles.forEach(([field, file]) => {
+      if (file && !file.type.startsWith('image/')) errors[field] = 'Tệp phải là hình ảnh.';
+      else if (file && file.size > 10 * 1024 * 1024) errors[field] = 'Ảnh không được vượt quá 10 MB.';
+    });
+
+    setValidationErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (reviewRequest) {
+      if (!canApproveProfileChange || !hasStructuredReview) return;
+      setIsSaving(true);
+      try {
+        await approveProfileChange.mutateAsync(reviewRequest.id);
+        showToast('Đã duyệt và áp dụng thông tin đề xuất vào hồ sơ nhân viên.');
+        setIsEditProfileModalOpen(false);
+      } catch (error) {
+        showToast(await getUserFacingError(error, 'Không thể duyệt yêu cầu thay đổi. Vui lòng thử lại.'));
+      } finally {
+        setIsSaving(false);
+      }
+      return;
+    }
+
+    if (!validateProfileForm()) {
+      showToast('Vui lòng kiểm tra các trường đang báo lỗi trước khi lưu.');
+      return;
+    }
+    setIsSaving(true);
+
+    try {
+      const companyId = employee.company_id;
+
+      let resolvedAvatarPath = avatarPath;
+      let resolvedFrontPath = idCardFrontPath;
+      let resolvedBackPath = idCardBackPath;
+      let resolvedVneidPath = vneidPath;
+
+      // ponytail: failed/rejected proposals can leave unused timestamped files;
+      // add scheduled cleanup only if storage growth becomes measurable.
+      if (avatarFile) resolvedAvatarPath = await uploadFile(avatarFile, companyId, targetEmployeeId, 'avatar');
+      if (idCardFrontFile) resolvedFrontPath = await uploadFile(idCardFrontFile, companyId, targetEmployeeId, 'cccd-front');
+      if (idCardBackFile) resolvedBackPath = await uploadFile(idCardBackFile, companyId, targetEmployeeId, 'cccd-back');
+      if (vneidFile) resolvedVneidPath = await uploadFile(vneidFile, companyId, targetEmployeeId, 'vneid');
+
+      if (!isAdmin) {
+        const normalizeRelatives = (items: typeof relatives) => items.map((relative) => ({
+          full_name: relative.fullName.trim(),
+          relationship: relative.relationship.trim(),
+          phone: relative.phone.trim(),
+          address: relative.address.trim(),
+          is_emergency_contact: relative.isEmergencyContact,
+        }));
+        const proposal = buildProfileChangeProposal({
+          employee: {
+            avatar_url: employee.avatar_url ?? null,
+            dob: employee.dob ?? null,
+            gender: employee.gender || 'Nam',
+            marital_status: employee.marital_status || 'Độc thân',
+            phone: employee.phone || '',
+            permanent_address: employee.permanent_address || '',
+            temporary_address: employee.temporary_address || '',
+          },
+          sensitive: {
+            id_card_number: sensitiveInfo?.id_card_number || '',
+            id_card_issue_date: sensitiveInfo?.id_card_issue_date ?? null,
+            id_card_issue_place: sensitiveInfo?.id_card_issue_place || '',
+            tax_code: sensitiveInfo?.tax_code || '',
+            social_insurance_code: sensitiveInfo?.social_insurance_code || '',
+            id_card_front_url: sensitiveInfo?.id_card_front_url ?? null,
+            id_card_back_url: sensitiveInfo?.id_card_back_url ?? null,
+            vneid_residency_url: sensitiveInfo?.vneid_residency_url ?? null,
+            bank_name: sensitiveInfo?.bank_name || '',
+            bank_account_number: sensitiveInfo?.bank_account_number || '',
+            bank_account_holder: sensitiveInfo?.bank_account_holder || '',
+            bank_branch: sensitiveInfo?.bank_branch || '',
+          },
+          relatives: normalizeRelatives((relativesData || []).map((relative) => ({
+            id: relative.id,
+            fullName: relative.full_name,
+            relationship: relative.relationship || '',
+            phone: relative.phone || '',
+            address: relative.address || '',
+            isEmergencyContact: relative.is_emergency_contact,
+          }))),
+        }, {
+          employee: {
+            avatar_url: resolvedAvatarPath,
+            dob: dob || null,
+            gender,
+            marital_status: maritalStatus,
+            phone: phone.trim(),
+            permanent_address: permanentAddress.trim(),
+            temporary_address: temporaryAddress.trim(),
+          },
+          sensitive: {
+            id_card_number: idCardNumber.trim(),
+            id_card_issue_date: idCardIssueDate || null,
+            id_card_issue_place: idCardIssuePlace.trim(),
+            tax_code: taxCode.trim(),
+            social_insurance_code: socialInsuranceCode.trim(),
+            id_card_front_url: resolvedFrontPath,
+            id_card_back_url: resolvedBackPath,
+            vneid_residency_url: resolvedVneidPath,
+            bank_name: bankName.trim(),
+            bank_account_number: accountNumber.trim(),
+            bank_account_holder: accountHolder.trim().toUpperCase(),
+            bank_branch: bankBranch.trim(),
+          },
+          relatives: normalizeRelatives(relatives),
+        });
+
+        if (!hasProfileChanges(proposal)) {
+          showToast('Bạn chưa thay đổi trường thông tin nào.');
+          return;
+        }
+
+        const result = await requestProfileChange.mutateAsync({ message: changeRequestMessage.trim(), proposedChanges: proposal });
+        showToast(result?.notificationDelivered
+          ? 'Đã gửi đề xuất thay đổi tới Admin/HR qua email.'
+          : 'Đã lưu đề xuất, nhưng email thông báo chưa được cấu hình.');
+        setIsEditProfileModalOpen(false);
+        return;
+      }
+
+      const employeeUpdates: Record<string, unknown> = {
+        avatar_url: resolvedAvatarPath,
+        // PostgreSQL date columns accept NULL for an optional value, not an
+        // empty string. Sending "" causes REST to reject the whole profile
+        // update with SQLSTATE 22007.
+        dob: dob || null,
+        gender,
+        marital_status: maritalStatus,
+        phone,
+        permanent_address: permanentAddress,
+        temporary_address: temporaryAddress,
+      };
+      if (isAdmin) {
+        Object.assign(employeeUpdates, {
+          full_name: fullName,
+          employee_code: employeeCode,
+          job_title: jobTitle,
+          department,
+          status,
+          email,
+          start_date: startDate || null,
+          contract_type: contractType,
+          current_salary: currentSalary,
+          last_salary_review_date: lastSalaryReviewDate || null,
+          kpi_level: kpiLevel || null,
+          kpi_target_per_day: kpiTargetPerDay === '' ? null : kpiTargetPerDay,
+          performance_commission_rate: performanceCommissionRate,
+          qc_commission_rate: qcCommissionRate,
+          guaranteed_income_amount: guaranteedIncomeAmount,
+        });
+      }
+
+      await Promise.all([
+        updateEmployee.mutateAsync({ id: targetEmployeeId, updates: employeeUpdates }),
+        upsertSensitiveInfo.mutateAsync({
+          employeeId: targetEmployeeId,
+          companyId,
+          updates: {
+            id_card_number: idCardNumber,
+            id_card_issue_date: idCardIssueDate || null,
+            id_card_issue_place: idCardIssuePlace,
+            tax_code: taxCode,
+            social_insurance_code: socialInsuranceCode,
+            id_card_front_url: resolvedFrontPath,
+            id_card_back_url: resolvedBackPath,
+            vneid_residency_url: resolvedVneidPath,
+            bank_name: bankName,
+            bank_account_number: accountNumber,
+            bank_account_holder: accountHolder.toUpperCase(),
+            bank_branch: bankBranch,
+          },
+        }),
+        setRelatives.mutateAsync({ employeeId: targetEmployeeId, companyId, relatives }),
+      ]);
+
+      showToast('Đã lưu hồ sơ nhân viên thành công!');
+      setIsEditProfileModalOpen(false);
+    } catch (err) {
+      showToast(await getUserFacingError(err, 'Không thể lưu hồ sơ. Vui lòng thử lại.'));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const tabs: { id: typeof activeTab; label: string; icon: React.ReactNode }[] = [
+    { id: 'general', label: '1. Thông tin Chung', icon: <User className="w-4 h-4" /> },
+    { id: 'employment', label: '2. Công việc & Lương', icon: <Briefcase className="w-4 h-4" /> },
+    { id: 'contact', label: '3. Liên hệ & Địa chỉ', icon: <MapPin className="w-4 h-4" /> },
+    { id: 'documents', label: '4. CCCD & Upload Ảnh', icon: <CreditCard className="w-4 h-4" /> },
+    { id: 'bank', label: '5. Ngân hàng', icon: <Landmark className="w-4 h-4" /> },
+    { id: 'relatives', label: '6. Người thân', icon: <Users className="w-4 h-4" /> },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl h-[min(92vh,760px)] max-h-[92vh] flex flex-col overflow-hidden border border-slate-200">
+
+        {/* Header */}
+        <div className="bg-slate-900 text-white p-6 flex items-center justify-between border-b border-slate-800">
+          <div className="flex items-center space-x-3">
+            <ImageAvatarPreview path={avatarFile ? null : avatarPath} file={avatarFile} />
+            <div>
+              <h2 className="text-lg font-bold flex items-center gap-2">
+                <span>{reviewRequest ? 'Duyệt đề xuất thay đổi hồ sơ' : isAdmin ? 'Chỉnh sửa Hồ sơ Nhân viên' : 'Đề xuất thay đổi hồ sơ'}</span>
+                <span className="text-xs bg-success-600/90 text-white font-mono font-bold px-2 py-0.5 rounded-md">
+                  {employeeCode}
+                </span>
+              </h2>
+              <p className="text-xs text-slate-300">
+                {reviewRequest ? 'Đề xuất của' : isAdmin ? 'Đang chỉnh sửa cho' : 'Hồ sơ của'}: <strong className="text-success-400">{targetLabel}</strong>
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setIsEditProfileModalOpen(false)}
+            className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+          {/* Navigation Sub-Tabs */}
+          <nav className="shrink-0 border-b border-slate-200 bg-slate-50 p-3 md:w-64 md:border-b-0 md:border-r md:p-4">
+            <p className="mb-2 hidden px-3 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400 md:block">Các mục hồ sơ</p>
+            <div className="flex gap-1 overflow-x-auto md:flex-col md:gap-1.5 md:overflow-visible">
+              {tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-3 text-sm font-bold transition-all cursor-pointer whitespace-nowrap md:w-full ${
+                    activeTab === tab.id
+                      ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20'
+                      : 'text-slate-600 hover:bg-white hover:text-slate-900'
+                  }`}
+                >
+                  {tab.icon}
+                  <span>{tab.label}</span>
+                  {proposedTabs.has(tab.id) && <span className={`ml-auto h-2 w-2 rounded-full ${activeTab === tab.id ? 'bg-white' : 'bg-amber-500'}`} title="Có thông tin đề xuất" />}
+                </button>
+              ))}
+            </div>
+          </nav>
+
+          <form onSubmit={handleSave} className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <fieldset disabled={!!reviewRequest} className="min-h-0 flex-1 overflow-y-auto p-6 sm:p-8">
+
+          {reviewRequest ? (
+            <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-950">
+              <p className="font-bold">Nội dung nhân viên gửi</p>
+              <p className="mt-1 whitespace-pre-wrap leading-5">{reviewRequest.message}</p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {proposedFieldLabels.map((label) => (
+                  <span key={label} className="rounded-lg border border-amber-200 bg-white px-2 py-1 font-semibold text-amber-800">{label}</span>
+                ))}
+              </div>
+              <p className="mt-3 text-[11px] text-amber-800">{hasStructuredReview ? 'Các giá trị đề xuất đã được điền sẵn bên dưới. Hồ sơ hiện tại chưa thay đổi.' : 'Đây là yêu cầu cũ chỉ có nội dung mô tả; không thể duyệt tự động.'}</p>
+            </div>
+          ) : !isAdmin ? (
+            <div className="mb-5 rounded-2xl border border-success-200 bg-success-50 p-4 text-xs text-success-950">
+              <p className="font-bold">Chỉ gửi bản đề xuất — hồ sơ hiện tại sẽ không thay đổi cho tới khi Admin duyệt.</p>
+              <label className="mt-3 block font-bold text-slate-700">
+                Lý do thay đổi *
+                <textarea value={changeRequestMessage} onChange={(event) => setChangeRequestMessage(event.target.value)} minLength={5} maxLength={2000} required rows={3} placeholder="Ví dụ: Tôi vừa đổi tài khoản nhận lương." className="mt-1.5 w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-success-700 focus:ring-2 focus:ring-success-700/15" />
+              </label>
+              {validationErrors.changeRequestMessage && <ValidationMessage message={validationErrors.changeRequestMessage} />}
+            </div>
+          ) : null}
+
+          {Object.keys(validationErrors).length > 0 && (
+            <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-800" role="alert">
+              <p className="font-bold">Vui lòng kiểm tra các thông tin sau:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                {Object.values(validationErrors).map((message) => <li key={message}>{message}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {!isAdmin && (activeTab === 'general' || activeTab === 'employment') && (
+            <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+              <Lock className="w-3.5 h-3.5" />
+              <span>Các trường có khóa chỉ Admin/HR mới sửa được.</span>
+            </div>
+          )}
+
+          {/* TAB 1: General */}
+          {activeTab === 'general' && (
+            <div className="space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <LockableField label="Họ và tên *" locked={!isAdmin}>
+                  <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} disabled={!isAdmin} className={inputClass} required />
+                </LockableField>
+                <LockableField label="Mã nhân viên (NV) *" locked={!isAdmin}>
+                  <input type="text" value={employeeCode} onChange={(e) => setEmployeeCode(e.target.value)} disabled={!isAdmin} className={`${inputClass} font-mono text-primary-700`} required />
+                </LockableField>
+                <LockableField label="Chức danh công việc *" locked={!isAdmin}>
+                  <input type="text" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} disabled={!isAdmin} className={inputClass} required />
+                </LockableField>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <LockableField label="Phòng ban *" locked={!isAdmin}>
+                  <select value={department} onChange={(e) => setDepartment(e.target.value)} disabled={!isAdmin} className={inputClass}>
+                    <option value="Phòng Thiết kế Nội thất">Phòng Thiết kế Nội thất</option>
+                    <option value="Phòng Thiết kế Kiến trúc">Phòng Thiết kế Kiến trúc</option>
+                    <option value="Ban Quản trị & Admin Văn phòng">Ban Quản trị & Admin Văn phòng</option>
+                    <option value="Phòng Thiết kế & Quản lý Chất lượng">Phòng Thiết kế & Quản lý Chất lượng</option>
+                  </select>
+                </LockableField>
+                <LockableField label="Trạng thái làm việc *" locked={!isAdmin}>
+                  <select value={status} onChange={(e) => setStatus(e.target.value)} disabled={!isAdmin} className={inputClass}>
+                    <option value="Chính thức">Chính thức</option>
+                    <option value="Thử việc">Thử việc</option>
+                    <option value="Mới tiếp nhận">Mới tiếp nhận</option>
+                    <option value="Đã nghỉ việc">Đã nghỉ việc</option>
+                  </select>
+                </LockableField>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className={`block font-bold mb-1 ${validationErrors.dob ? 'text-rose-600' : 'text-slate-700'}`}>Ngày sinh:</label>
+                  <input type="date" value={dob} onChange={(e) => setDob(e.target.value)} className={inputClass} />
+                  {validationErrors.dob && <ValidationMessage message={validationErrors.dob} />}
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Giới tính:</label>
+                  <select value={gender} onChange={(e) => setGender(e.target.value as 'Nam' | 'Nữ' | 'Khác')} className={inputClass}>
+                    <option value="Nam">Nam</option>
+                    <option value="Nữ">Nữ</option>
+                    <option value="Khác">Khác</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Tình trạng hôn nhân:</label>
+                  <select value={maritalStatus} onChange={(e) => setMaritalStatus(e.target.value as 'Độc thân' | 'Đã kết hôn')} className={inputClass}>
+                    <option value="Độc thân">Độc thân</option>
+                    <option value="Đã kết hôn">Đã kết hôn</option>
+                  </select>
+                </div>
+              </div>
+
+              {isAdmin && (
+                <div className="p-4 bg-primary-50/60 rounded-2xl border border-primary-200 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="font-bold text-primary-900 flex items-center gap-1.5">
+                      <Award className="w-4 h-4" />
+                      <span>Chỉ tiêu KPI & Level Vị trí công việc (Liên kết Bảng lương)</span>
+                    </p>
+                    <span className="text-[10px] font-bold px-2 py-0.5 bg-white border border-primary-300 rounded-lg text-primary-700">
+                      Định dạng: x view / ngày
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">Level vị trí công việc:</label>
+                      <input
+                        type="text"
+                        list="kpi-level-options"
+                        placeholder="VD: Level 5: Senior 3D Artist"
+                        value={kpiLevel}
+                        onChange={(e) => setKpiLevel(e.target.value)}
+                        className={inputClass}
+                      />
+                      <datalist id="kpi-level-options">
+                        {KPI_LEVEL_SUGGESTIONS.map((level) => (
+                          <option key={level} value={level} />
+                        ))}
+                      </datalist>
+                    </div>
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">Chỉ tiêu KPI (x view / ngày):</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={kpiTargetPerDay}
+                          onChange={(e) => setKpiTargetPerDay(e.target.value === '' ? '' : Number(e.target.value))}
+                          className={`${inputClass} font-bold text-primary-700`}
+                        />
+                        <span className="text-[11px] text-slate-500 whitespace-nowrap">view / ngày</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">Performance commission:</label>
+                      <div className="flex items-center gap-2">
+                        <CurrencyInput value={performanceCommissionRate} onValueChange={(value) => setPerformanceCommissionRate(Number(value || 0))} className={inputClass} />
+                        <span className="text-[11px] text-slate-500 whitespace-nowrap">VNĐ / view</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">QC commission:</label>
+                      <div className="flex items-center gap-2">
+                        <CurrencyInput value={qcCommissionRate} onValueChange={(value) => setQcCommissionRate(Number(value || 0))} className={inputClass} />
+                        <span className="text-[11px] text-slate-500 whitespace-nowrap">VNĐ / QC view</span>
+                      </div>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block font-bold text-slate-700 mb-1">Mức đảm bảo thu nhập (nếu áp dụng):</label>
+                      <CurrencyInput value={guaranteedIncomeAmount} onValueChange={(value) => setGuaranteedIncomeAmount(Number(value || 0))} className={inputClass} />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-500">
+                    Hệ thống tự động tính: <strong>{kpiTargetPerDay || 0} view/ngày × số ngày công chuẩn của tháng = Tổng chỉ tiêu KPI</strong> và đồng bộ sang Bảng lương.
+                  </p>
+                </div>
+              )}
+
+              <ImageUploadSlot
+                label="Ảnh Avatar đại diện"
+                path={avatarPath}
+                pendingFile={avatarFile}
+                onPick={setAvatarFile}
+                heightClass="h-40"
+                objectFitClass="object-contain"
+              />
+              {validationErrors.avatarFile && <ValidationMessage message={validationErrors.avatarFile} />}
+            </div>
+          )}
+
+          {/* TAB 2: Employment snapshot (admin-only) */}
+          {activeTab === 'employment' && (
+            <div className="space-y-4 text-xs">
+              <p className="text-[11px] text-slate-500">
+                Lịch sử hợp đồng chi tiết xem ở màn "Hợp đồng & Lương" — đây chỉ là thông tin hiện hành.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <LockableField label="Ngày bắt đầu làm việc" locked={!isAdmin}>
+                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} disabled={!isAdmin} className={inputClass} />
+                </LockableField>
+                <LockableField label="Loại hợp đồng hiện tại" locked={!isAdmin}>
+                  <select value={contractType} onChange={(e) => setContractType(e.target.value)} disabled={!isAdmin} className={inputClass}>
+                    <option value="Thử việc">Thử việc</option>
+                    <option value="HĐ xác định thời hạn (1 năm)">HĐ xác định thời hạn (1 năm)</option>
+                    <option value="HĐ xác định thời hạn (2 năm)">HĐ xác định thời hạn (2 năm)</option>
+                    <option value="HĐ không xác định thời hạn">HĐ không xác định thời hạn</option>
+                  </select>
+                </LockableField>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <LockableField label="Mức lương cơ bản (VND)" locked={!isAdmin}>
+                  <CurrencyInput value={currentSalary} onValueChange={(value) => setCurrentSalary(Number(value || 0))} disabled={!isAdmin} className={`${inputClass} font-bold text-success-700`} />
+                </LockableField>
+                <LockableField label="Ngày review gần nhất" locked={!isAdmin}>
+                  <input type="date" value={lastSalaryReviewDate} onChange={(e) => setLastSalaryReviewDate(e.target.value)} disabled={!isAdmin} className={inputClass} />
+                </LockableField>
+              </div>
+
+              {isAdmin && (
+                <div className="p-4 bg-primary-50/60 rounded-2xl border border-primary-200 space-y-2">
+                  <p className="font-bold text-primary-900 text-xs">Hợp đồng lao động & trường tùy chỉnh</p>
+                  <p className="text-[11px] text-slate-500">
+                    Quản lý hợp đồng chi tiết, bao gồm các trường tùy chỉnh riêng cho từng hợp đồng, ngay tại đây.
+                  </p>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditingContract(null)}
+                      className="px-3.5 py-2 bg-white hover:bg-primary-50 border border-primary-300 text-primary-700 font-semibold rounded-xl text-xs cursor-pointer"
+                    >
+                      + Tạo hợp đồng mới
+                    </button>
+                    {latestContract && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingContract(latestContract)}
+                        className="px-3.5 py-2 bg-primary-600 hover:bg-primary-700 text-white font-semibold rounded-xl text-xs cursor-pointer"
+                      >
+                        Chỉnh sửa hợp đồng hiện tại
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 3: Contact & Address */}
+          {activeTab === 'contact' && (
+            <div className="space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className={`block font-bold mb-1 ${validationErrors.phone ? 'text-rose-600' : 'text-slate-700'}`}>Số điện thoại liên hệ *:</label>
+                  <input type="text" value={phone} onChange={(e) => setPhone(e.target.value)} className={`${inputClass} font-bold text-primary-700`} required />
+                  {validationErrors.phone && <ValidationMessage message={validationErrors.phone} />}
+                </div>
+                <LockableField label="Email công ty *" locked={!isAdmin}>
+                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} disabled={!isAdmin} className={inputClass} required />
+                  {validationErrors.email && <ValidationMessage message={validationErrors.email} />}
+                </LockableField>
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Địa chỉ thường trú (Hộ khẩu trên CCCD):</label>
+                <textarea rows={2} value={permanentAddress} onChange={(e) => setPermanentAddress(e.target.value)} className={inputClass}></textarea>
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Địa chỉ tạm trú hiện tại:</label>
+                <textarea rows={2} value={temporaryAddress} onChange={(e) => setTemporaryAddress(e.target.value)} className={inputClass}></textarea>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: Documents & CCCD Upload */}
+          {activeTab === 'documents' && (
+            <div className="space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className={`block font-bold mb-1 ${validationErrors.idCardNumber ? 'text-rose-600' : 'text-slate-700'}`}>Số CCCD / Hộ chiếu *:</label>
+                  <input type="text" value={idCardNumber} onChange={(e) => setIdCardNumber(e.target.value)} className={`${inputClass} font-mono font-bold`} />
+                  {validationErrors.idCardNumber && <ValidationMessage message={validationErrors.idCardNumber} />}
+                </div>
+                <div>
+                  <label className={`block font-bold mb-1 ${validationErrors.idCardIssueDate ? 'text-rose-600' : 'text-slate-700'}`}>Ngày cấp:</label>
+                  <input type="date" value={idCardIssueDate} onChange={(e) => setIdCardIssueDate(e.target.value)} className={inputClass} />
+                  {validationErrors.idCardIssueDate && <ValidationMessage message={validationErrors.idCardIssueDate} />}
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Nơi cấp:</label>
+                  <input type="text" value={idCardIssuePlace} onChange={(e) => setIdCardIssuePlace(e.target.value)} className={inputClass} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className={`block font-bold mb-1 ${validationErrors.taxCode ? 'text-rose-600' : 'text-slate-700'}`}>Mã số thuế cá nhân (MST):</label>
+                  <input type="text" value={taxCode} onChange={(e) => setTaxCode(e.target.value)} className={`${inputClass} font-mono text-primary-700`} />
+                  {validationErrors.taxCode && <ValidationMessage message={validationErrors.taxCode} />}
+                </div>
+                <div>
+                  <label className={`block font-bold mb-1 ${validationErrors.socialInsuranceCode ? 'text-rose-600' : 'text-slate-700'}`}>Mã số Bảo hiểm xã hội (BHXH):</label>
+                  <input type="text" value={socialInsuranceCode} onChange={(e) => setSocialInsuranceCode(e.target.value)} className={`${inputClass} font-mono text-success-700`} />
+                  {validationErrors.socialInsuranceCode && <ValidationMessage message={validationErrors.socialInsuranceCode} />}
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-800 mb-2">Ảnh CCCD 2 mặt:</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <ImageUploadSlot label="Mặt trước CCCD" path={idCardFrontPath} pendingFile={idCardFrontFile} onPick={setIdCardFrontFile} />
+                  <ImageUploadSlot label="Mặt sau CCCD" path={idCardBackPath} pendingFile={idCardBackFile} onPick={setIdCardBackFile} />
+                </div>
+              </div>
+
+              <div className="p-4 bg-gradient-to-br from-red-50/80 via-rose-50/50 to-orange-50/40 rounded-2xl border-2 border-red-200/90 space-y-3">
+                <div className="flex items-center gap-2 pb-2 border-b border-red-200/70">
+                  <div className="flex items-center gap-2">
+                    <div>
+                      <h4 className="font-extrabold text-xs text-red-950">Ảnh chụp trang "Thông tin cư trú" (VNeID)</h4>
+                      <p className="text-[11px] text-red-700">Xác thực địa chỉ thường trú, tạm trú</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-1">
+                  <div>
+                    {vneidPath || vneidFile ? (
+                      <ImageUploadSlot label="" path={vneidPath} pendingFile={vneidFile} onPick={setVneidFile} onClear={() => setVneidPath(null)} heightClass="h-48" />
+                    ) : (
+                      <label className="border-2 border-dashed border-red-300 rounded-2xl p-3 bg-white flex flex-col items-center justify-center py-6 cursor-pointer text-slate-600 hover:text-red-600 transition-colors min-h-[160px]">
+                        <div className="w-12 h-12 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center mb-2">
+                          <Smartphone className="w-6 h-6" />
+                        </div>
+                        <span className="text-xs font-bold text-slate-800">Tải lên ảnh chụp màn hình VNeID</span>
+                        <span className="mt-2 px-3 py-1 bg-red-600 text-white rounded-lg text-xs font-bold flex items-center gap-1">
+                          <Upload className="w-3.5 h-3.5" /> Chọn ảnh tải lên
+                        </span>
+                        <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && setVneidFile(e.target.files[0])} />
+                      </label>
+                    )}
+                  </div>
+                </div>
+                {validationErrors.vneidFile && <ValidationMessage message={validationErrors.vneidFile} />}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 5: Bank Info */}
+          {activeTab === 'bank' && (
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className={`block font-bold mb-1 ${validationErrors.bankName ? 'text-rose-600' : 'text-slate-700'}`}>Tên Ngân hàng nhận lương *:</label>
+                <input type="text" value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="VD: Vietcombank, Techcombank, MB Bank..." className={`${inputClass} font-bold`} />
+                {validationErrors.bankName && <ValidationMessage message={validationErrors.bankName} />}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className={`block font-bold mb-1 ${validationErrors.accountNumber ? 'text-rose-600' : 'text-slate-700'}`}>Số tài khoản nhận lương *:</label>
+                  <input type="text" value={accountNumber} onChange={(e) => setAccountNumber(e.target.value)} className={`${inputClass} font-mono font-bold text-primary-700 text-sm`} />
+                  {validationErrors.accountNumber && <ValidationMessage message={validationErrors.accountNumber} />}
+                </div>
+                <div>
+                  <label className={`block font-bold mb-1 ${validationErrors.accountHolder ? 'text-rose-600' : 'text-slate-700'}`}>Tên chủ tài khoản (Viết hoa không dấu) *:</label>
+                  <input type="text" value={accountHolder} onChange={(e) => setAccountHolder(e.target.value.toUpperCase())} className={`${inputClass} font-mono font-bold uppercase`} />
+                  {validationErrors.accountHolder && <ValidationMessage message={validationErrors.accountHolder} />}
+                </div>
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Chi nhánh ngân hàng mở thẻ:</label>
+                <input type="text" value={bankBranch} onChange={(e) => setBankBranch(e.target.value)} className={inputClass} />
+              </div>
+            </div>
+          )}
+
+          {/* TAB 6: Relatives */}
+          {activeTab === 'relatives' && (
+            <div className="space-y-4 text-xs">
+              <div className="flex items-center justify-between">
+                <p className="font-bold text-slate-800">Danh sách Người thân & Người liên hệ khẩn cấp</p>
+                <button type="button" onClick={handleAddRelative} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-primary-800 bg-primary-50 hover:bg-primary-100 rounded-lg border border-primary-200 cursor-pointer">
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Thêm người thân mới</span>
+                </button>
+              </div>
+
+              {relatives.length === 0 ? (
+                <p className="text-xs text-slate-400 italic py-6 text-center border border-dashed border-slate-200 rounded-xl">
+                  Chưa khai báo thông tin người thân.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {relatives.map((rel, index) => (
+                    <div key={rel.id} className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-primary-900">Người thân #{index + 1}</span>
+                        <div className="flex items-center gap-3">
+                          <label className="flex items-center gap-1.5 text-xs font-semibold text-amber-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={rel.isEmergencyContact}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setRelativesState(relatives.map((r) => (r.id === rel.id ? { ...r, isEmergencyContact: checked } : r)));
+                              }}
+                            />
+                            <span>Liên hệ khẩn cấp</span>
+                          </label>
+                          <button type="button" onClick={() => handleRemoveRelative(rel.id)} className="p-1 text-slate-400 hover:text-rose-600 rounded-md cursor-pointer">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                        <input type="text" placeholder="Họ và tên" value={rel.fullName} onChange={(e) => setRelativesState(relatives.map((r) => (r.id === rel.id ? { ...r, fullName: e.target.value } : r)))} className="px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg font-bold" />
+                        <input type="text" placeholder="Mối quan hệ" value={rel.relationship} onChange={(e) => setRelativesState(relatives.map((r) => (r.id === rel.id ? { ...r, relationship: e.target.value } : r)))} className="px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg" />
+                        <input type="text" placeholder="Số điện thoại" value={rel.phone} onChange={(e) => setRelativesState(relatives.map((r) => (r.id === rel.id ? { ...r, phone: e.target.value } : r)))} className="px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg font-mono" />
+                        <input type="text" placeholder="Địa chỉ" value={rel.address} onChange={(e) => setRelativesState(relatives.map((r) => (r.id === rel.id ? { ...r, address: e.target.value } : r)))} className="px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg" />
+                      </div>
+                      {validationErrors[`relative-${index}`] && <ValidationMessage message={validationErrors[`relative-${index}`]} />}
+                      {validationErrors[`relative-phone-${index}`] && <ValidationMessage message={validationErrors[`relative-phone-${index}`]} />}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+            </fieldset>
+
+            {/* Modal Footer */}
+            <div className="shrink-0 border-t border-slate-200 bg-white px-6 py-4 sm:px-8 flex items-center justify-end gap-3">
+            <button type="button" onClick={() => setIsEditProfileModalOpen(false)} className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer">
+              {reviewRequest ? 'Đóng' : 'Hủy bỏ'}
+            </button>
+            {(!reviewRequest || (canApproveProfileChange && hasStructuredReview)) && (
+              <button type="submit" disabled={isSaving} className={`flex items-center gap-2 px-6 py-2.5 text-xs font-bold text-white disabled:opacity-60 rounded-xl transition-colors shadow-md cursor-pointer ${reviewRequest || !isAdmin ? 'bg-success-700 hover:bg-success-800 shadow-success-700/20' : 'bg-primary-600 hover:bg-primary-700 shadow-primary-600/20'}`}>
+                {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : reviewRequest || !isAdmin ? <Send className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+                <span>{reviewRequest ? 'Duyệt & áp dụng' : isAdmin ? 'Lưu thay đổi hồ sơ' : 'Gửi đề xuất thay đổi'}</span>
+              </button>
+            )}
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {editingContract !== undefined && employee && (
+        <ContractEditorModal
+          employee={employee}
+          employees={[employee]}
+          contract={editingContract}
+          existingContracts={employeeContracts || []}
+          onClose={() => setEditingContract(undefined)}
+        />
+      )}
+    </div>
+  );
+};
+
+const inputClass =
+  'w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-primary-500 disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed';
+
+const LockableField: React.FC<{ label: string; locked: boolean; children: React.ReactNode }> = ({ label, locked, children }) => (
+  <div>
+    <label className="flex items-center gap-1.5 font-bold text-slate-700 mb-1">
+      <span>{label}</span>
+      {locked && <Lock className="w-3 h-3 text-slate-400" />}
+    </label>
+    {children}
+  </div>
+);
+
+const ValidationMessage: React.FC<{ message: string }> = ({ message }) => (
+  <p className="mt-1 text-[11px] font-semibold text-rose-600" role="alert">{message}</p>
+);
+
+const ImageAvatarPreview: React.FC<{ path: string | null; file: File | null }> = ({ path, file }) => {
+  const { data: signedUrl } = useSignedImageUrl(file ? null : path, AVATAR_TRANSFORM);
+  const src = file ? URL.createObjectURL(file) : signedUrl;
+  return (
+    <div className="relative w-11 h-11 rounded-full overflow-hidden border-2 border-success-500 bg-slate-700 flex items-center justify-center">
+      {src ? <img src={src} alt="" className="w-full h-full object-cover" /> : <Camera className="w-4 h-4 text-slate-400" />}
+    </div>
+  );
+};
